@@ -14,3 +14,9 @@ android {
         versionName '6.0.0'
     }
 }
+
+dependencies {
+    // sing-box Android libbox runtime. This adds the library only;
+    // VPN service lifecycle and profile-to-sing-box config conversion are separate steps.
+    implementation 'com.github.singbox-android:libbox:1.14.0'
+}
