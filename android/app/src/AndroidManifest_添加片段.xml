@@ -1,0 +1,9 @@
+<!-- 把下面的 service 节点放进现有 <application>...</application> 内；不要覆盖整个 Manifest。 -->
+<service
+    android:name=".Q7VpnService"
+    android:permission="android.permission.BIND_VPN_SERVICE"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="android.net.VpnService" />
+    </intent-filter>
+</service>
