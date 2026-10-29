@@ -1,0 +1,20 @@
+services:
+  q7vpn:
+    build: .
+    container_name: q7vpn
+    restart: unless-stopped
+    ports:
+      - "10000:10000"
+    environment:
+      # 用 https（比如套 Cloudflare / nginx + 证书）时设成 1，纯 http 访问必须设 0，
+      # 否则浏览器不回传会话 Cookie，登录会静默失败。
+      COOKIE_SECURE: "0"
+      SECRET_KEY: "换成你自己的随机长字符串-至少32位"
+      IP_HASH_SALT: "再换一个独立的随机盐"
+      Q7VPN_DB_PATH: "/data/q7vpn.sqlite3"
+      Q7VPN_TZ_OFFSET: "8"
+    volumes:
+      - q7vpn-data:/data
+
+volumes:
+  q7vpn-data:
