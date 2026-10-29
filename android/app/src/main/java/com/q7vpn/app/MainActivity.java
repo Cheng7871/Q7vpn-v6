@@ -16,6 +16,8 @@ import android.widget.Toast;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
@@ -64,10 +66,17 @@ public class MainActivity extends Activity {
         String selectedUri = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_SELECTED, "");
         for (String line : raw.split("\n")) {
             if (line.trim().isEmpty()) continue;
-            Node n = parse(line);
-            if (n == null) continue;
-            nodes.add(n);
-            if (!selectedUri.isEmpty() && selectedUri.equals(n.uri)) selected = n;
+            java.util.List<NodeParser.ParsedNode> parsed = NodeParser.parseText(line);
+            if (parsed.isEmpty()) {
+                Node legacy = parse(line);
+                if (legacy != null) nodes.add(legacy);
+                continue;
+            }
+            for (NodeParser.ParsedNode item : parsed) {
+                Node n = new Node(item.uri, item.name, item.protocol, item.host, item.port);
+                nodes.add(n);
+                if (!selectedUri.isEmpty() && selectedUri.equals(n.uri)) selected = n;
+            }
         }
     }
 
@@ -112,7 +121,7 @@ public class MainActivity extends Activity {
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(32)));
 
         LinearLayout actions = new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button importBtn = new Button(this); importBtn.setText("导入 TXT"); styleButton(importBtn, true);
+        Button importBtn = new Button(this); importBtn.setText("导入配置"); styleButton(importBtn, true);
         importBtn.setOnClickListener(v -> pickTxt());
         Button testBtn = new Button(this); testBtn.setText("筛选节点"); styleButton(testBtn, false);
         testBtn.setOnClickListener(v -> testAll());
@@ -140,7 +149,7 @@ public class MainActivity extends Activity {
     private void pickTxt() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("text/plain");
+        i.setType("*/*");
         startActivityForResult(i, PICK_TXT);
     }
 
@@ -151,20 +160,26 @@ public class MainActivity extends Activity {
         int added = 0, duplicates = 0, invalid = 0;
         HashSet<String> seenUris = new HashSet<>();
         for (Node existing : nodes) seenUris.add(existing.uri);
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(getContentResolver().openInputStream(file), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = br.readLine()) != null && nodes.size() < 3000) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                Node n = parse(line);
-                if (n == null) { invalid++; continue; }
-                if (!seenUris.add(n.uri)) duplicates++;
-                else { nodes.add(n); added++; }
+        try (InputStream in = getContentResolver().openInputStream(file);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (in == null) throw new IllegalStateException("无法打开文件");
+            byte[] buffer = new byte[8192]; int count;
+            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            String content = new String(out.toByteArray(), StandardCharsets.UTF_8);
+            java.util.List<NodeParser.ParsedNode> parsed = NodeParser.parseText(content);
+            for (NodeParser.ParsedNode item : parsed) {
+                if (nodes.size() >= 3000) break;
+                if (!seenUris.add(item.uri)) { duplicates++; continue; }
+                nodes.add(new Node(item.uri, item.name, item.protocol, item.host, item.port));
+                added++;
             }
+            // Count non-empty source lines that did not produce a supported node.
+            int sourceLines = content.split("\\r?\\n").length;
+            invalid = Math.max(0, sourceLines - parsed.size());
             persistNodes();
             visibleNodeCount = NODE_PAGE_SIZE;
-            summary.setText(nodes.size() + " 个节点 · 新增 " + added + " · 重复 " + duplicates + " · 无效 " + invalid);
-            status.setText("已导入配置，正在后台自动筛选端口不可达的节点。端口可达不代表协议一定可用。");
+            summary.setText(nodes.size() + " 个节点 · 新增 " + added + " · 重复 " + duplicates + " · 未识别 " + invalid);
+            status.setText("导入完成。支持常见分享链接、Base64 订阅和基础 Clash YAML 识别；Clash 条目目前仅识别展示，尚不能直接连接。");
             redraw();
             if (added > 0) testAll();
         } catch (Exception e) {
@@ -278,6 +293,10 @@ public class MainActivity extends Activity {
     }
 
     private void handoff(Node n) {
+        if (n.protocol != null && n.protocol.startsWith("CLASH")) {
+            Toast.makeText(this, "该 Clash 条目目前只识别展示，暂不能直接交给客户端连接。", Toast.LENGTH_LONG).show();
+            return;
+        }
         selected = n;
         Intent share = new Intent(Intent.ACTION_SEND);
         share.setType("text/plain");
