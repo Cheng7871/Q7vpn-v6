@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080b13"><title>Q7VPN · 账户</title>
+<link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('q7theme')||'dark'}catch(e){}</script>
+</head>
+<body class="auth-page">
+<div class="global-controls auth-global-controls" aria-label="显示设置">
+  <button type="button" class="glass-control language-control" onclick="toggleLanguage()" aria-label="切换语言"><span class="control-dot">文</span><span id="language-label">中文 / EN</span></button>
+  <button type="button" class="glass-control theme-control" onclick="toggleTheme()" aria-label="切换主题"><span class="theme-orb">◐</span><span data-zh="主题" data-en="Theme">主题</span></button>
+  <button type="button" class="glass-control palette-control" onclick="cycleAccent()" aria-label="切换强调色"><span class="palette-dots"><i></i><i></i><i></i></span><span data-zh="色彩" data-en="Color">色彩</span></button>
+</div>
+<main class="auth-stage">
+  <header class="auth-brand-block">
+    <div class="auth-wordmark" aria-label="Q7VPN"><span>Q7</span><b>VPN</b><i></i></div>
+    <p class="auth-kicker">PRIVATE NETWORK · YOUR CONTROL</p>
+    <h1>{{ '创建你的账户' if mode=='register' else '欢迎回来' }}</h1>
+    <p class="auth-intro">{{ '建立你的专属 Q7VPN 身份，安全管理节点配置。' if mode=='register' else '登录后继续管理你的专属网络配置。' }}</p>
+  </header>
+  <div class="auth-tabs"><a class="{{ 'active' if mode!='register' else '' }}" href="{{ url_for('auth',mode='login') }}">登录账户</a><a class="{{ 'active' if mode=='register' else '' }}" href="{{ url_for('auth',mode='register') }}">创建账户</a></div>
+  {% for category,message in get_flashed_messages(with_categories=true) %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  <form method="post" class="auth-card">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="mode" value="{{ 'register' if mode=='register' else 'login' }}">
+    {% if mode=='register' %}
+      <label class="field-label" for="username">设置用户名</label><input class="field auth-field" id="username" name="username" placeholder="例如 q7_user" autocomplete="username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]{3,32}">
+    {% else %}
+      <label class="field-label" for="username">用户名 / 专属 ID</label><input class="field auth-field" id="username" name="username" placeholder="用户名或 Q7-0000001" autocomplete="username" required>
+    {% endif %}
+    <label class="field-label" for="password">{{ '设置登录密码' if mode=='register' else '登录密码' }}</label><input class="field auth-field" id="password" name="password" type="password" placeholder="至少 10 位" autocomplete="{{ 'new-password' if mode=='register' else 'current-password' }}" required minlength="10">
+    <label class="field-label" for="captcha">图片验证码</label>
+    <div class="captcha-row">
+      <input class="field auth-field captcha-input" id="captcha" name="captcha" placeholder="输入右侧 4 位验证码" autocomplete="off" autocapitalize="characters" required maxlength="4" minlength="4" aria-label="图片验证码">
+      <button type="button" class="captcha-image-button" onclick="refreshCaptcha()" aria-label="刷新验证码" title="看不清？点击刷新"><img id="captcha-image" src="{{ url_for('captcha_image') }}" alt="图片验证码，点击刷新"><span>换一张</span></button>
+    </div>
+    <p class="captcha-hint">验证码不通过短信发送，有效期 10 分钟；点击图片可更换。</p>
+    {% if lock_remaining|default(0) > 0 %}
+      <div class="lock-notice" role="status"><span class="lock-icon">⌑</span><div><strong>登录暂时锁定</strong><p>同一 IP 连续失败达到 5 次，等待后自动解锁。</p><div class="lock-countdown" data-seconds="{{ lock_remaining }}">剩余 <b>{{ (lock_remaining // 60) }}:{{ '%02d'|format(lock_remaining % 60) }}</b></div></div></div>
+    {% endif %}
+    {% if mode=='register' %}
+      <div class="auth-divider"><span>账户找回设置</span></div>
+      <label class="field-label" for="phone">手机号</label><input class="field auth-field" id="phone" name="phone" placeholder="用于账户找回（当前不发送短信）" autocomplete="tel" required>
+      <label class="field-label" for="question">安全问题</label><select class="field auth-field" id="question" name="question" required><option value="">选择一个安全问题</option><option>我童年最喜欢的老师姓什么？</option><option>我第一只宠物叫什么？</option><option>我最喜欢的城市是哪里？</option></select>
+      <label class="field-label" for="answer">安全答案</label><input class="field auth-field" id="answer" name="answer" placeholder="请使用不容易被猜到的答案" required minlength="2">
+      <p class="auth-note"><span>ⓘ</span> 注册完成后会生成唯一的 Q7-数字 ID，请保存好。以后可用用户名或该 ID 登录。</p>
+    {% endif %}
+    <button class="auth-submit" type="submit" {% if lock_remaining|default(0) > 0 %}disabled{% endif %}>{{ '创建 Q7VPN 账户' if mode=='register' else '登录 Q7VPN' }}<span>↗</span></button>
+    <div class="auth-links">{% if mode!='register' %}<a href="{{ url_for('recover') }}">忘记密码？</a>{% else %}<span>密码至少 10 位，建议使用独立密码</span>{% endif %}<span class="auth-secure-caption" data-zh="加密会话 · 安全防护" data-en="Encrypted session · Protected">加密会话 · 安全防护</span></div>
+  </form>
+  <footer class="auth-footer"><span class="footer-mini-brand">Q7VPN</span><span>SECURE BY DESIGN</span></footer>
+</main>
+<script>
+function toggleTheme(){let t=document.documentElement.dataset.theme==='light'?'dark':'light';document.documentElement.dataset.theme=t;localStorage.setItem('q7theme',t)}
+function translateStatic(lang){const pairs={
+'创建你的账户':'Create your account','欢迎回来':'Welcome back','建立你的专属 Q7VPN 身份，安全管理节点配置。':'Create your Q7VPN identity and manage your configurations securely.','登录后继续管理你的专属网络配置。':'Sign in to manage your private network configurations.','登录账户':'Sign in','创建账户':'Create account','设置用户名':'Choose a username','用户名 / 专属 ID':'Username / Account ID','设置登录密码':'Create password','登录密码':'Password','图片验证码':'Image verification code','输入右侧 4 位验证码':'Enter the 4-character code','换一张':'Refresh','验证码不通过短信发送，有效期 10 分钟；点击图片可更换。':'No SMS needed. Valid for 10 minutes; click the image to refresh.','账户找回设置':'Account recovery','手机号':'Phone number','用于账户找回（当前不发送短信）':'For account recovery (no SMS is sent)','安全问题':'Security question','选择一个安全问题':'Choose a security question','安全答案':'Security answer','请使用不容易被猜到的答案':'Choose an answer that is hard to guess','注册完成后会生成唯一的 Q7-数字 ID，请保存好。以后可用用户名或该 ID 登录。':'A unique Q7-number ID is created after registration. Save it; use your username or ID to sign in.','创建 Q7VPN 账户':'Create Q7VPN account','登录 Q7VPN':'Sign in to Q7VPN','忘记密码？':'Forgot password?','密码至少 10 位，建议使用独立密码':'Use a unique password of at least 10 characters','加密会话 · 安全防护':'Encrypted session · Protected','账户与安全':'Account & Security','账户信息':'Account overview','修改密码':'Change password','账户活动':'Account activity','首页':'Home','节点':'Nodes','导入':'Import','安全中心':'Security','账户安全':'Account security','退出':'Log out','退出登录':'Log out','专属 ID':'Unique ID','用户名':'Username','绑定手机号':'Phone number','已保存节点':'Saved nodes','注册时间':'Registered','当前密码':'Current password','新密码':'New password','确认新密码':'Confirm new password','输入当前密码':'Enter current password','再次输入新密码':'Re-enter new password','保存新密码':'Save new password','复制 ID':'Copy ID','主题':'Theme','色彩':'Color','切换主题':'Switch theme','账户活动':'Account activity','暂无账户活动记录':'No account activity yet','欢迎使用 Q7VPN':'Welcome to Q7VPN','节点配置':'Node configurations','搜索节点':'Search nodes','粘贴节点 URI':'Paste node URI','开始导入':'Import now','删除':'Delete','复制':'Copy','分享':'Share','安全中心':'Security center'};const map={};Object.entries(pairs).forEach(([zh,en])=>{map[lang==='en'?zh:en]=lang==='en'?en:zh});const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);nodes.forEach(n=>{const key=n.nodeValue.trim();if(map[key])n.nodeValue=n.nodeValue.replace(key,map[key])});document.querySelectorAll('input[placeholder],textarea[placeholder]').forEach(el=>{const val=el.getAttribute('placeholder');if(map[val])el.setAttribute('placeholder',map[val])})}
+function toggleLanguage(){const lang=localStorage.getItem('q7lang')==='en'?'zh':'en';localStorage.setItem('q7lang',lang);applyLanguage(lang)}
+function applyLanguage(lang){document.documentElement.lang=lang==='en'?'en':'zh-CN';document.querySelectorAll('[data-zh][data-en]').forEach(el=>{el.textContent=lang==='en'?el.dataset.en:el.dataset.zh});translateStatic(lang);const label=document.getElementById('language-label');if(label)label.textContent=lang==='en'?'EN / 中文':'中文 / EN';document.body.classList.toggle('english-ui',lang==='en')}
+function cycleAccent(){const palettes=['cyan','violet','rose','mint'];let current=localStorage.getItem('q7accent')||'cyan';let next=palettes[(palettes.indexOf(current)+1)%palettes.length];localStorage.setItem('q7accent',next);document.documentElement.dataset.accent=next}
+try{document.documentElement.dataset.accent=localStorage.getItem('q7accent')||'cyan';}catch(e){}
+applyLanguage(localStorage.getItem('q7lang')||'zh');
+function refreshCaptcha(){const img=document.getElementById('captcha-image');if(img)img.src='{{ url_for('captcha_image') }}?refresh=1&t='+Date.now();const input=document.getElementById('captcha');if(input)input.value=''}
+document.querySelectorAll('.lock-countdown').forEach(el=>{let seconds=Number(el.dataset.seconds||0);const btn=document.querySelector('.auth-submit');function tick(){if(seconds<=0){el.innerHTML='已解锁，请刷新页面后重试';if(btn)btn.disabled=false;return}const m=Math.floor(seconds/60),s=seconds%60;el.innerHTML='剩余 <b>'+m+':'+String(s).padStart(2,'0')+'</b>';seconds--;setTimeout(tick,1000)}tick()});
+</script>
+</body></html>
