@@ -39,17 +39,18 @@ jobs:
           ls -la "$ANDROID_HOME"
           find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f
 
-      - name: Accept Android SDK licenses
+            - name: Accept Android SDK licenses
         shell: bash
         run: |
-          set -euxo pipefail
+          set -eu
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)"
           if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager not found"
+            echo "ERROR: sdkmanager not found"
             exit 1
           fi
           echo "Using SDK manager: $SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses
+          yes | "$SDKMANAGER" --licenses || true
+          echo "License step finished"
 
       - name: Install Android SDK packages
         shell: bash
