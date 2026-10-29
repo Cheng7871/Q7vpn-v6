@@ -1,3 +1,4 @@
+
 name: Build Q7VPN Android APK
 
 on:
@@ -15,6 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,17 +27,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Pin command-line tools to avoid setup-android trying to replace an
-      # incompatible preinstalled sdkmanager during the build.
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: "11076708"
-          packages: |
-            platform-tools
-            platforms;android-35
-            build-tools;35.0.0
-          accept-android-sdk-licenses: true
+      - name: Accept Android SDK licenses and install packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -60,3 +59,4 @@ jobs:
           name: Q7VPN-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
