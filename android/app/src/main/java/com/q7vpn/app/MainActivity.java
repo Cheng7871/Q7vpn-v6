@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.net.VpnService;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -13,6 +15,9 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -33,11 +38,14 @@ import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private static final int PICK_TXT = 77;
+    private static final int VPN_PREPARE = 78;
     private static final String PREFS = "q7vpn";
     private static final String KEY_NODES = "saved_nodes";
     private static final String KEY_SELECTED = "selected_uri";
     private static final int MAX_PROBE_THREADS = 16;
     private static final int NODE_PAGE_SIZE = 80;
+
+    private String pendingVpnConfig;
     private final ArrayList<Node> nodes = new ArrayList<>();
     private ExecutorService executor = Executors.newFixedThreadPool(4);
     private LinearLayout list;
@@ -57,7 +65,7 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        loadNodes();          // 节点本来只存在内存里，进程一被杀就全丢
+        loadNodes();
         buildUi();
     }
 
@@ -90,24 +98,28 @@ public class MainActivity extends Activity {
     }
 
     private int dp(float v) { return (int)(v * getResources().getDisplayMetrics().density + 0.5f); }
+
     private GradientDrawable rounded(int color, int stroke, float radiusDp) {
         GradientDrawable d = new GradientDrawable();
         d.setColor(color); d.setCornerRadius(dp(radiusDp));
         if (stroke != 0) d.setStroke(dp(1), stroke);
         return d;
     }
+
     private void styleButton(Button b, boolean primary) {
         b.setAllCaps(false); b.setTextSize(13); b.setTextColor(primary ? Color.rgb(8,18,31) : Color.rgb(224,238,250));
         b.setBackground(rounded(primary ? Color.rgb(133,231,239) : Color.rgb(29,39,59),
                 primary ? Color.rgb(172,248,255) : Color.rgb(81,143,173), 14));
         b.setMinHeight(dp(46)); b.setElevation(0);
     }
+
     private TextView text(String value, int size, int color) {
         TextView t = new TextView(this);
         t.setText(value); t.setTextSize(size); t.setTextColor(color);
         return t;
     }
-    private GradientButtonStyle unused; // marker for documentation; no custom view dependency
+
+    private GradientButtonStyle unused;
 
     private void buildUi() {
         int bg = Color.rgb(9,11,18), fg = Color.rgb(247,247,251), muted = Color.rgb(148,153,173);
@@ -117,6 +129,7 @@ public class MainActivity extends Activity {
 
         TextView title = text("Q7VPN", 32, fg); title.setGravity(Gravity.CENTER_VERTICAL);
         title.setTypeface(null, 1); root.addView(title);
+
         TextView subtitle = text("节点 · 诊断 · 安全连接", 14, muted);
         root.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(32)));
 
@@ -129,8 +142,24 @@ public class MainActivity extends Activity {
         actions.addView(testBtn, new LinearLayout.LayoutParams(0, dp(52), 1));
         root.addView(actions);
 
+        // ========== 补丁新增：VPN连接/断开按钮组 ==========
+        LinearLayout vpnActions = new LinearLayout(this);
+        vpnActions.setOrientation(LinearLayout.HORIZONTAL);
+        Button connectBtn = new Button(this);
+        connectBtn.setText("连接所选节点");
+        styleButton(connectBtn, true);
+        connectBtn.setOnClickListener(v -> startSelectedVpn());
+        Button disconnectBtn = new Button(this);
+        disconnectBtn.setText("断开 VPN");
+        styleButton(disconnectBtn, false);
+        disconnectBtn.setOnClickListener(v -> stopSelectedVpn());
+        vpnActions.addView(connectBtn, new LinearLayout.LayoutParams(0, dp(50), 1));
+        vpnActions.addView(disconnectBtn, new LinearLayout.LayoutParams(0, dp(50), 1));
+        root.addView(vpnActions);
+
         summary = text("0 个节点 · 尚未检测", 15, muted);
         summary.setPadding(0, dp(12), 0, dp(8)); root.addView(summary);
+
         status = text("导入 TXT 后可筛选端口不可达节点；当前版本尚未内置 VPN 隧道内核。", 13, muted);
         status.setPadding(dp(14), dp(12), dp(14), dp(12));
         status.setBackground(rounded(Color.rgb(25,32,49), Color.rgb(58,91,120), 16)); root.addView(status);
@@ -142,6 +171,7 @@ public class MainActivity extends Activity {
 
         TextView foot = text("说明：当前版本是节点管理器，尚未内置 VPN 隧道内核；不会伪报“已连接”。", 12, muted);
         foot.setPadding(0, dp(12), 0, 0); root.addView(foot);
+
         setContentView(root);
         redraw();
     }
@@ -155,6 +185,18 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        // ========== 补丁新增：VPN权限回调处理 ==========
+        if (requestCode == VPN_PREPARE) {
+            if (resultCode == RESULT_OK && pendingVpnConfig != null) {
+                launchVpn(pendingVpnConfig);
+            } else {
+                status.setText("你没有允许 Q7VPN 使用 VPN，连接没有开始。");
+            }
+            pendingVpnConfig = null;
+            return;
+        }
+
         if (requestCode != PICK_TXT || resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri file = data.getData();
         int added = 0, duplicates = 0, invalid = 0;
@@ -173,7 +215,6 @@ public class MainActivity extends Activity {
                 nodes.add(new Node(item.uri, item.name, item.protocol, item.host, item.port));
                 added++;
             }
-            // Count non-empty source lines that did not produce a supported node.
             int sourceLines = content.split("\\r?\\n").length;
             invalid = Math.max(0, sourceLines - parsed.size());
             persistNodes();
@@ -199,7 +240,6 @@ public class MainActivity extends Activity {
             if (raw.startsWith("ss://")) {
                 String body = raw.substring(5).split("#",2)[0];
                 String name = raw.contains("#") ? URLDecoder.decode(raw.substring(raw.indexOf('#')+1), "UTF-8") : "Shadowsocks 节点";
-                // SS URI formats vary; only parse authority-style host:port safely in this MVP.
                 int at = body.lastIndexOf('@');
                 if (at < 0) return new Node(raw, name, "SS", "", 0);
                 String auth = body.substring(at+1);
@@ -244,7 +284,6 @@ public class MainActivity extends Activity {
             workers.shutdownNow();
             runOnUiThread(() -> {
                 int before = nodes.size();
-                // Automatically remove only confirmed TCP failures. Unsupported URI formats remain for safety.
                 nodes.removeIf(n -> "不可达".equals(n.latency));
                 int removed = before - nodes.size();
                 if (selected != null && !nodes.contains(selected)) selected = null;
@@ -267,7 +306,6 @@ public class MainActivity extends Activity {
             card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(16),dp(14),dp(16),dp(14));
             LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2); cp.setMargins(0,dp(8),0,dp(4));
             card.setBackground(rounded(Color.rgb(22,29,45), Color.rgb(54,85,113), 18)); list.addView(card, cp);
-
             TextView name = text(n.name, 17, Color.WHITE); name.setTypeface(null,1); card.addView(name);
             TextView meta = text(n.protocol + "  ·  " + n.host + (n.port > 0 ? ":"+n.port : "") + "  ·  " + n.country + "  ·  " + n.latency, 12, Color.rgb(159,164,185));
             meta.setPadding(0,dp(6),0,dp(8)); card.addView(meta);
@@ -310,12 +348,80 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ========== 补丁新增三个VPN控制方法 ==========
+    private void startSelectedVpn() {
+        if (selected == null) {
+            Toast.makeText(this, "请先选择一个节点", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            JSONObject config = SingBoxConfigBuilder.build(selected.uri);
+            JSONArray tunAddresses = new JSONArray()
+                    .put("172.19.0.1/30")
+                    .put("fdfe:dcba:9876::1/126");
+            JSONObject tun = new JSONObject()
+                    .put("type", "tun")
+                    .put("tag", "tun-in")
+                    .put("address", tunAddresses)
+                    .put("mtu", 1400)
+                    .put("auto_route", true)
+                    .put("strict_route", true)
+                    .put("stack", "gvisor");
+            config.put("inbounds", new JSONArray().put(tun));
+
+            JSONObject remoteDns = new JSONObject()
+                    .put("type", "https")
+                    .put("tag", "dns-remote")
+                    .put("server", "1.1.1.1")
+                    .put("server_port", 443)
+                    .put("path", "/dns-query")
+                    .put("detour", "proxy");
+            config.put("dns", new JSONObject()
+                    .put("servers", new JSONArray().put(remoteDns))
+                    .put("final", "dns-remote"));
+
+            config.put("route", new JSONObject()
+                    .put("rules", new JSONArray().put(
+                            new JSONObject().put("protocol", "dns").put("action", "hijack-dns")))
+                    .put("final", "proxy"));
+
+            if (selected.protocol != null && selected.protocol.equalsIgnoreCase("TROJAN")) {
+                JSONObject proxy = config.getJSONArray("outbounds").getJSONObject(0);
+                if (!proxy.has("tls")) {
+                    proxy.put("tls", new JSONObject().put("enabled", true).put("server_name", selected.host));
+                }
+            }
+
+            pendingVpnConfig = config.toString();
+            Intent consent = VpnService.prepare(this);
+            if (consent != null) startActivityForResult(consent, VPN_PREPARE);
+            else launchVpn(pendingVpnConfig);
+        } catch (Exception e) {
+            Toast.makeText(this, "节点暂时不能连接：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void launchVpn(String config) {
+        Intent intent = new Intent(this, Q7VpnService.class);
+        intent.setAction(Q7VpnService.ACTION_START);
+        intent.putExtra(Q7VpnService.EXTRA_CONFIG, config);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
+        else startService(intent);
+        status.setText("已请求启动 VPN。请看手机顶部 Q7VPN 通知；启动成功不代表节点一定能上网，还要实际测试。");
+    }
+
+    private void stopSelectedVpn() {
+        Intent intent = new Intent(this, Q7VpnService.class);
+        intent.setAction(Q7VpnService.ACTION_STOP);
+        startService(intent);
+        status.setText("已发送断开 VPN 命令。");
+    }
+
     @Override protected void onDestroy() {
         persistNodes();
         executor.shutdownNow();
         super.onDestroy();
     }
 
-    // A named marker to avoid adding dependencies for a custom drawable/button library.
     private static class GradientButtonStyle {}
 }
