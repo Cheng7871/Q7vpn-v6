@@ -2,6 +2,9 @@ package com.q7vpn.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -50,6 +53,14 @@ public class MainActivity extends Activity {
     private Node selected;
     private int visibleNodeCount = NODE_PAGE_SIZE;
     private volatile boolean checking = false;
+    private boolean vpnReceiverRegistered = false;
+    private final BroadcastReceiver vpnStatusReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null || status == null) return;
+            String message = intent.getStringExtra(Q7VpnService.EXTRA_MESSAGE);
+            if (message != null && !message.isEmpty()) status.setText(message);
+        }
+    };
 
     static class Node {
         String uri, name, protocol, host, country = "未知地区";
@@ -64,6 +75,25 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         loadNodes();
         buildUi();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        IntentFilter filter = new IntentFilter(Q7VpnService.ACTION_STATUS);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(vpnStatusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(vpnStatusReceiver, filter);
+        }
+        vpnReceiverRegistered = true;
+    }
+
+    @Override protected void onStop() {
+        if (vpnReceiverRegistered) {
+            try { unregisterReceiver(vpnStatusReceiver); } catch (Exception ignored) { }
+            vpnReceiverRegistered = false;
+        }
+        super.onStop();
     }
 
     private void loadNodes() {
@@ -235,7 +265,7 @@ public class MainActivity extends Activity {
             persistNodes();
             visibleNodeCount = NODE_PAGE_SIZE;
             summary.setText(nodes.size() + " 个节点 · 新增 " + added + " · 重复 " + duplicates + " · 未识别 " + invalid);
-            status.setText("导入完成。支持常见分享链接、Base64 订阅和基础 Clash YAML 识别；Clash 条目目前仅识别展示，尚不能直接连接。");
+            status.setText("导入完成。当前可连接的分享链接格式：VLESS、VMess、Trojan、Shadowsocks。基础 Clash YAML 仅识别展示，不能直接连接。");
             redraw();
             if (added > 0) testAll();
         } catch (Exception e) {
@@ -307,13 +337,10 @@ public class MainActivity extends Activity {
             catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             workers.shutdownNow();
             runOnUiThread(() -> {
-                int before = nodes.size();
-                nodes.removeIf(n -> "不可达".equals(n.latency));
-                int removed = before - nodes.size();
-                if (selected != null && !nodes.contains(selected)) selected = null;
                 persistNodes();
-                summary.setText(nodes.size() + " 个节点保留 · 已移除端口不可达 " + removed + " 个");
-                status.setText("筛选完成。这里只检测服务器端口；要确认节点协议可用，请点击“连接所选节点”并测试实际网络。");
+                long reachable = nodes.stream().filter(n -> !"不可达".equals(n.latency) && !"无法检测".equals(n.latency)).count();
+                summary.setText(nodes.size() + " 个节点保留 · 端口可达 " + reachable + " 个（未删除节点）");
+                status.setText("端口检测完成。端口可达不代表协议一定可用；未删除任何节点，请连接后测试实际网络。");
                 checking = false;
                 redraw();
             });
@@ -352,12 +379,17 @@ public class MainActivity extends Activity {
                 status.setText("已选择：" + n.name + "。点击页面上方“连接所选节点”启动内置 VPN。");
                 redraw();
             });
-            Button share = new Button(this);
-            share.setText("交给客户端");
-            styleButton(share, false);
-            share.setOnClickListener(v -> handoff(n));
+            Button connect = new Button(this);
+            connect.setText("连接此节点");
+            styleButton(connect, false);
+            connect.setOnClickListener(v -> {
+                selected = n;
+                persistNodes();
+                redraw();
+                startSelectedVpn();
+            });
             row.addView(select, new LinearLayout.LayoutParams(0, dp(48), 1));
-            row.addView(share, new LinearLayout.LayoutParams(0, dp(48), 1));
+            row.addView(connect, new LinearLayout.LayoutParams(0, dp(48), 1));
             card.addView(row);
         }
         if (shown < nodes.size()) {
@@ -372,87 +404,20 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void handoff(Node n) {
-        if (n.protocol != null && n.protocol.startsWith("CLASH")) {
-            Toast.makeText(this, "该 Clash 条目目前只识别展示，暂不能直接交给客户端连接。", Toast.LENGTH_LONG).show();
-            return;
-        }
-        selected = n;
-        persistNodes();
-        Intent share = new Intent(Intent.ACTION_SEND);
-        share.setType("text/plain");
-        share.putExtra(Intent.EXTRA_SUBJECT, "Q7vpn 节点配置");
-        share.putExtra(Intent.EXTRA_TEXT, n.uri);
-        try {
-            startActivity(Intent.createChooser(share, "选择兼容的代理客户端导入节点"));
-            status.setText("已打开分享菜单。请在兼容客户端中导入配置，并在该客户端确认 VPN 系统授权。");
-        } catch (Exception e) {
-            Toast.makeText(this, "未找到可用的分享目标。", Toast.LENGTH_LONG).show();
-        }
-    }
-
     private void startSelectedVpn() {
         if (selected == null) {
             Toast.makeText(this, "请先选择一个节点", Toast.LENGTH_LONG).show();
             return;
         }
         try {
-            JSONObject config = SingBoxConfigBuilder.build(selected.uri);
-            JSONObject proxy = config.getJSONArray("outbounds").getJSONObject(0);
-            proxy.put("domain_resolver", "dns-bootstrap");
-
-            JSONArray tunAddresses = new JSONArray()
-                    .put("172.19.0.1/30")
-                    .put("fdfe:dcba:9876::1/126");
-            JSONArray tunDnsAddresses = new JSONArray()
-                    .put("172.19.0.2")
-                    .put("fdfe:dcba:9876::2");
-            JSONObject tun = new JSONObject()
-                    .put("type", "tun")
-                    .put("tag", "tun-in")
-                    .put("address", tunAddresses)
-                    .put("dns_mode", "hijack")
-                    .put("dns_address", tunDnsAddresses)
-                    .put("mtu", 1400)
-                    .put("auto_route", true)
-                    .put("stack", "gvisor");
-            config.put("inbounds", new JSONArray().put(tun));
-
-            JSONObject bootstrapDns = new JSONObject()
-                    .put("type", "udp")
-                    .put("tag", "dns-bootstrap")
-                    .put("server", "1.1.1.1");
-            JSONObject remoteDns = new JSONObject()
-                    .put("type", "https")
-                    .put("tag", "dns-remote")
-                    .put("server", "1.1.1.1")
-                    .put("server_port", 443)
-                    .put("path", "/dns-query")
-                    .put("detour", "proxy");
-            config.put("dns", new JSONObject()
-                    .put("servers", new JSONArray().put(bootstrapDns).put(remoteDns))
-                    .put("final", "dns-remote"));
-
-            config.put("route", new JSONObject()
-                    .put("auto_detect_interface", true)
-                    .put("rules", new JSONArray().put(
-                            new JSONObject()
-                                    .put("protocol", "dns")
-                                    .put("action", "hijack-dns")))
-                    .put("final", "proxy"));
-
-            if (selected.protocol != null && selected.protocol.equalsIgnoreCase("TROJAN") && !proxy.has("tls")) {
-                proxy.put("tls", new JSONObject()
-                        .put("enabled", true)
-                        .put("server_name", selected.host));
-            }
-
-            pendingVpnConfig = config.toString();
+            // Builder returns the complete config: proxy outbound, DNS, TUN and route.
+            pendingVpnConfig = SingBoxConfigBuilder.build(selected.uri).toString();
             Intent consent = VpnService.prepare(this);
             if (consent != null) startActivityForResult(consent, VPN_PREPARE);
             else launchVpn(pendingVpnConfig);
         } catch (Exception e) {
-            Toast.makeText(this, "节点暂时不能连接：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "节点配置无法生成：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            if (status != null) status.setText("节点配置无法生成：" + e.getMessage());
         }
     }
 
@@ -462,7 +427,7 @@ public class MainActivity extends Activity {
         intent.putExtra(Q7VpnService.EXTRA_CONFIG, config);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
         else startService(intent);
-        status.setText("已请求启动 VPN。请看手机顶部 Q7VPN 通知；启动成功不代表节点一定能上网，还要实际测试。");
+        status.setText("已请求启动 VPN，正在创建核心和系统隧道…");
     }
 
     private void stopSelectedVpn() {

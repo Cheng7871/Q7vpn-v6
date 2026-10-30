@@ -53,6 +53,9 @@ public final class Q7VpnService extends VpnService {
     public static final String ACTION_START = "com.q7vpn.app.action.START_VPN";
     public static final String ACTION_STOP = "com.q7vpn.app.action.STOP_VPN";
     public static final String EXTRA_CONFIG = "com.q7vpn.app.extra.SINGBOX_CONFIG";
+    public static final String ACTION_STATUS = "com.q7vpn.app.action.VPN_STATUS";
+    public static final String EXTRA_STATUS = "com.q7vpn.app.extra.STATUS";
+    public static final String EXTRA_MESSAGE = "com.q7vpn.app.extra.MESSAGE";
 
     private static final String TAG = "Q7VpnService";
     private static final String LIBBOX = "io.nekohasekai.libbox.";
@@ -79,6 +82,18 @@ public final class Q7VpnService extends VpnService {
     private boolean systemProxyEnabled;
     private volatile String activeConfig;
 
+    private void publishStatus(String state, String message) {
+        Intent update = new Intent(ACTION_STATUS);
+        update.setPackage(getPackageName());
+        update.putExtra(EXTRA_STATUS, state);
+        update.putExtra(EXTRA_MESSAGE, message);
+        sendBroadcast(update);
+    }
+
+    boolean protectSocketFd(int fd) {
+        return protect(fd);
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
@@ -95,6 +110,7 @@ public final class Q7VpnService extends VpnService {
         String config = intent.getStringExtra(EXTRA_CONFIG);
         if (config == null || config.trim().isEmpty()) {
             Log.e(TAG, "启动失败：没有收到 sing-box 配置");
+            publishStatus("error", "启动失败：没有收到 sing-box 配置");
             stopSelf(startId);
             return START_NOT_STICKY;
         }
@@ -105,10 +121,12 @@ public final class Q7VpnService extends VpnService {
             startForegroundCompat("Q7VPN 正在连接");
         } catch (Throwable error) {
             Log.e(TAG, "无法启动前台 VPN 服务", error);
+            publishStatus("error", "无法启动前台 VPN 服务：" + safeMessage(error));
             stopSelf(startId);
             return START_NOT_STICKY;
         }
 
+        publishStatus("starting", "正在启动 sing-box 核心并建立 VPN 隧道…");
         Future<?> previous = startFuture;
         if (previous != null) previous.cancel(true);
         final String finalConfig = config;
@@ -117,12 +135,16 @@ public final class Q7VpnService extends VpnService {
                 closeCore();
                 if (stopping || Thread.currentThread().isInterrupted()) return;
                 startCore(finalConfig);
-                if (!stopping) updateNotification("Q7VPN 已启动");
+                if (!stopping) {
+                    updateNotification("核心已启动；请测试实际上网");
+                    publishStatus("core_started", "核心启动完成；请打开网页测试节点是否真正可用。");
+                }
             } catch (Throwable error) {
                 Log.e(TAG, "sing-box 启动失败", error);
                 closeCore();
                 if (!stopping) {
                     updateNotification("Q7VPN 启动失败：" + safeMessage(error));
+                    publishStatus("error", "VPN 启动失败：" + safeMessage(error));
                     mainHandler.post(() -> {
                         stopForegroundCompat();
                         stopSelf(startId);
@@ -139,8 +161,7 @@ public final class Q7VpnService extends VpnService {
 
         Class<?> platformType = Class.forName(LIBBOX + "PlatformInterface");
         Class<?> handlerType = Class.forName(LIBBOX + "CommandServerHandler");
-        Object platform = Proxy.newProxyInstance(
-                platformType.getClassLoader(), new Class<?>[]{platformType}, new PlatformHandler());
+        Object platform = LibboxPlatform.createProxy(this, platformType);
         Object handler = Proxy.newProxyInstance(
                 handlerType.getClassLoader(), new Class<?>[]{handlerType}, new CommandHandler());
 
@@ -190,66 +211,6 @@ public final class Q7VpnService extends VpnService {
                 // Optional API; setup itself is required.
             }
             libboxReady = true;
-        }
-    }
-
-    private final class PlatformHandler implements InvocationHandler {
-        @Override
-        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-            String name = method.getName();
-            if (isObjectMethod(proxy, method, args)) return objectMethod(proxy, method, args, "Q7VPN PlatformInterface");
-
-            switch (name) {
-                case "usePlatformAutoDetectInterfaceControl":
-                    return true;
-                case "autoDetectInterfaceControl": {
-                    int fd = ((Number) args[0]).intValue();
-                    if (!protect(fd)) throw new IllegalStateException("无法保护 VPN 核心的底层网络连接");
-                    return null;
-                }
-                case "openTun":
-                    return openTun(args[0]);
-                case "useProcFS":
-                    return Build.VERSION.SDK_INT < Build.VERSION_CODES.Q;
-                case "findConnectionOwner":
-                    return findConnectionOwner(args, method.getReturnType());
-                case "startDefaultInterfaceMonitor":
-                    startDefaultInterfaceMonitor(args == null || args.length == 0 ? null : args[0]);
-                    return null;
-                case "closeDefaultInterfaceMonitor":
-                    closeDefaultInterfaceMonitor();
-                    return null;
-                case "getInterfaces":
-                    return buildInterfaceIterator(method.getReturnType());
-                case "underNetworkExtension":
-                case "includeAllNetworks":
-                    return false;
-                case "clearDNSCache":
-                case "startNeighborMonitor":
-                case "closeNeighborMonitor":
-                case "sendNotification":
-                case "cancelNotification":
-                case "registerMyInterface":
-                case "checkPlatformShell":
-                    return null;
-                case "readWIFIState":
-                case "localDNSTransport":
-                case "openShellSession":
-                case "createBridge":
-                case "lookupUser":
-                    return null;
-                case "usePlatformShell":
-                case "usePlatformBridge":
-                    return false;
-                case "readSystemSSHHostKey":
-                case "lookupSFTPServer":
-                    return "";
-                case "tailscaleHostname":
-                    return Build.MANUFACTURER + " " + Build.MODEL;
-                default:
-                    Log.d(TAG, "未专门实现 PlatformInterface 回调：" + name);
-                    return defaultValue(method.getReturnType());
-            }
         }
     }
 
@@ -308,7 +269,7 @@ public final class Q7VpnService extends VpnService {
         });
     }
 
-    private int openTun(Object options) throws Exception {
+    int openTun(Object options) throws Exception {
         if (VpnService.prepare(this) != null) {
             throw new IllegalStateException("Q7VPN 尚未获得系统 VPN 授权，请返回应用重新连接");
         }
@@ -375,6 +336,7 @@ public final class Q7VpnService extends VpnService {
             tunDescriptor = pfd;
         }
         Log.i(TAG, "Android TUN 已建立，IPv4 地址数=" + ipv4AddressCount + "，IPv6 地址数=" + ipv6AddressCount);
+        publishStatus("tun_established", "Android VPN 隧道已建立；节点能否联网还需要实际测试。");
         return pfd.getFd();
     }
 
@@ -436,7 +398,7 @@ public final class Q7VpnService extends VpnService {
         }
     }
 
-    private Object buildInterfaceIterator(Class<?> iteratorType) throws Exception {
+    Object buildInterfaceIterator(Class<?> iteratorType) throws Exception {
         Class<?> itemType = Class.forName(LIBBOX + "NetworkInterface");
         List<Object> items = new ArrayList<>();
         ConnectivityManager manager = getSystemService(ConnectivityManager.class);
@@ -520,7 +482,7 @@ public final class Q7VpnService extends VpnService {
         return makeObjectIterator(iteratorType, items);
     }
 
-    private void startDefaultInterfaceMonitor(Object listener) {
+    void startDefaultInterfaceMonitor(Object listener) {
         closeDefaultInterfaceMonitor();
         if (listener == null) return;
         defaultInterfaceListener = listener;
@@ -565,7 +527,7 @@ public final class Q7VpnService extends VpnService {
         }
     }
 
-    private void closeDefaultInterfaceMonitor() {
+    void closeDefaultInterfaceMonitor() {
         ConnectivityManager manager = getSystemService(ConnectivityManager.class);
         if (manager != null && defaultNetworkCallback != null) {
             try { manager.unregisterNetworkCallback(defaultNetworkCallback); }
@@ -575,22 +537,35 @@ public final class Q7VpnService extends VpnService {
         defaultInterfaceListener = null;
     }
 
-    private Object findConnectionOwner(Object[] args, Class<?> returnType) throws Exception {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || args == null || args.length < 5) return null;
-        ConnectivityManager manager = getSystemService(ConnectivityManager.class);
-        if (manager == null) return null;
+    Object findConnectionOwner(Object[] args, Class<?> returnType) throws Exception {
+        if (args == null || args.length < 5) return null;
         int protocol = ((Number) args[0]).intValue();
         String sourceAddress = String.valueOf(args[1]);
         int sourcePort = ((Number) args[2]).intValue();
         String destinationAddress = String.valueOf(args[3]);
         int destinationPort = ((Number) args[4]).intValue();
-        int uid = manager.getConnectionOwnerUid(protocol,
-                new InetSocketAddress(InetAddress.getByName(sourceAddress), sourcePort),
-                new InetSocketAddress(InetAddress.getByName(destinationAddress), destinationPort));
-        if (uid == -1) throw new IllegalStateException("找不到连接所属 UID");
-        Object owner = returnType.getConstructor().newInstance();
-        setProperty(owner, "userId", uid);
-        String[] packages = getPackageManager().getPackagesForUid(uid);
+
+        Object owner;
+        int uid;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ConnectivityManager manager = getSystemService(ConnectivityManager.class);
+            if (manager == null) return null;
+            uid = manager.getConnectionOwnerUid(protocol,
+                    new InetSocketAddress(InetAddress.getByName(sourceAddress), sourcePort),
+                    new InetSocketAddress(InetAddress.getByName(destinationAddress), destinationPort));
+            if (uid == -1) throw new IllegalStateException("找不到连接所属 UID");
+            owner = returnType.getConstructor().newInstance();
+            setProperty(owner, "userId", uid);
+        } else {
+            // Android 8/9: use libbox's procfs-based implementation, as the official
+            // Android client does before ConnectivityManager.getConnectionOwnerUid().
+            owner = invokeStaticFiveArgs(Class.forName(LIBBOX + "Libbox"), "findConnectionOwner",
+                    protocol, sourceAddress, sourcePort, destinationAddress, destinationPort);
+            if (owner == null) throw new IllegalStateException("libbox 未能识别连接所属应用");
+            uid = readInt(owner, "userId", -1);
+        }
+
+        String[] packages = uid >= 0 ? getPackageManager().getPackagesForUid(uid) : null;
         setProperty(owner, "userName", packages == null || packages.length == 0 ? "" : packages[0]);
         List<String> packageList = new ArrayList<>();
         if (packages != null) Collections.addAll(packageList, packages);
@@ -721,6 +696,22 @@ public final class Q7VpnService extends VpnService {
         throw new NoSuchMethodException(target.getClass().getName() + "." + name + "(4 args)");
     }
 
+    private static Object invokeStaticFiveArgs(Class<?> type, String name,
+                                               Object a, Object b, Object c, Object d, Object e) throws Exception {
+        for (Method method : type.getMethods()) {
+            Class<?>[] parameters = method.getParameterTypes();
+            if (method.getName().equals(name) && Modifier.isStatic(method.getModifiers())
+                    && parameters.length == 5
+                    && compatible(parameters[0], a) && compatible(parameters[1], b)
+                    && compatible(parameters[2], c) && compatible(parameters[3], d)
+                    && compatible(parameters[4], e)) {
+                try { return method.invoke(null, a, b, c, d, e); }
+                catch (InvocationTargetException error) { throw unwrap(error); }
+            }
+        }
+        throw new NoSuchMethodException(type.getName() + "." + name + "(5 args)");
+    }
+
     private static void invokeStaticOneArg(Class<?> type, String name, Object argument) throws Exception {
         for (Method method : type.getMethods()) {
             if (method.getName().equals(name) && Modifier.isStatic(method.getModifiers())
@@ -817,6 +808,7 @@ public final class Q7VpnService extends VpnService {
         closeDefaultInterfaceMonitor();
         closeCore();
         stopForegroundCompat();
+        publishStatus("stopped", "VPN 已断开。");
         stopSelf();
     }
 
