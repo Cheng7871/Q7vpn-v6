@@ -1,3 +1,4 @@
+
 workflows:
   q7vpn-v6-android-debug:
     name: Q7VPN V6 Android debug APK
@@ -5,38 +6,72 @@ workflows:
     instance_type: mac_mini_m2
 
     environment:
-      vars:
-        ANDROID_COMPILE_SDK: "35"
-        ANDROID_BUILD_TOOLS: "35.0.0"
-        GRADLE_VERSION: "8.9"
       java: 17
+
     scripts:
-      - name: Install Android SDK components
-        script: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}"
-      - name: Install pinned Gradle
-        script: |
-          set -euo pipefail
-          curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /tmp
-          echo "/tmp/gradle-${GRADLE_VERSION}/bin" >> "$CM_ENV"
-      - name: Verify build environment
+      - name: Verify Android build environment
         script: |
           set -euo pipefail
           java -version
-          gradle --version
-          test -d "$ANDROID_SDK_ROOT/platforms/android-${ANDROID_COMPILE_SDK}"
-          test -d "$ANDROID_SDK_ROOT/build-tools/${ANDROID_BUILD_TOOLS}"
-      - name: Build APK
+          echo "Android SDK: $ANDROID_SDK_ROOT"
+          test -d "$ANDROID_SDK_ROOT/platforms/android-35"
+          test -d "$ANDROID_SDK_ROOT/build-tools/35.0.0"
+
+      - name: Set Android SDK location
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+
+      - name: Build Q7VPN Debug APK
         script: |
           set -euo pipefail
           cd android
-          gradle --no-daemon --stacktrace :app:assembleDebug
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
           test -s app/build/outputs/apk/debug/app-debug.apk
+
     artifacts:
       - android/app/build/outputs/apk/debug/app-debug.apk
+
     publishing:
       email:
-        recipients: [2042264067@qq.com]
+        recipients:
+          - 2042264067@qq.com
+
+workflows:
+  q7vpn-v6-android-debug:
+    name: Q7VPN V6 Android debug APK
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    environment:
+      java: 17
+
+    scripts:
+      - name: Verify Android build environment
+        script: |
+          set -euo pipefail
+          java -version
+          echo "Android SDK: $ANDROID_SDK_ROOT"
+          test -d "$ANDROID_SDK_ROOT/platforms/android-35"
+          test -d "$ANDROID_SDK_ROOT/build-tools/35.0.0"
+
+      - name: Set Android SDK location
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+
+      - name: Build Q7VPN Debug APK
+        script: |
+          set -euo pipefail
+          cd android
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
+          test -s app/build/outputs/apk/debug/app-debug.apk
+
+    artifacts:
+      - android/app/build/outputs/apk/debug/app-debug.apk
+
+    publishing:
+      email:
+        recipients:
+          - 2042264067@qq.com
+
