@@ -2,68 +2,32 @@
 workflows:
   q7vpn-v6-android-debug:
     name: Q7VPN V6 Android debug APK
-    max_build_duration: 60
+    max_build_duration: 120
     instance_type: mac_mini_m2
 
     environment:
       java: 17
 
     scripts:
-      - name: Verify Android build environment
-        script: |
-          set -euo pipefail
-          java -version
-          echo "Android SDK: $ANDROID_SDK_ROOT"
-          test -d "$ANDROID_SDK_ROOT/platforms/android-35"
-          test -d "$ANDROID_SDK_ROOT/build-tools/35.0.0"
-
       - name: Set Android SDK location
         script: |
+          set -e
           echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+
+      - name: Check project files
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR/android"
+          test -f settings.gradle || test -f settings.gradle.kts
+          test -f app/build.gradle || test -f app/build.gradle.kts
+          test -f gradlew
+          chmod +x gradlew
+          java -version
 
       - name: Build Q7VPN Debug APK
         script: |
-          set -euo pipefail
-          cd android
-          chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace :app:assembleDebug
-          test -s app/build/outputs/apk/debug/app-debug.apk
-
-    artifacts:
-      - android/app/build/outputs/apk/debug/app-debug.apk
-
-    publishing:
-      email:
-        recipients:
-          - 2042264067@qq.com
-
-workflows:
-  q7vpn-v6-android-debug:
-    name: Q7VPN V6 Android debug APK
-    max_build_duration: 60
-    instance_type: mac_mini_m2
-
-    environment:
-      java: 17
-
-    scripts:
-      - name: Verify Android build environment
-        script: |
-          set -euo pipefail
-          java -version
-          echo "Android SDK: $ANDROID_SDK_ROOT"
-          test -d "$ANDROID_SDK_ROOT/platforms/android-35"
-          test -d "$ANDROID_SDK_ROOT/build-tools/35.0.0"
-
-      - name: Set Android SDK location
-        script: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
-
-      - name: Build Q7VPN Debug APK
-        script: |
-          set -euo pipefail
-          cd android
-          chmod +x gradlew
+          set -e
+          cd "$CM_BUILD_DIR/android"
           ./gradlew --no-daemon --stacktrace :app:assembleDebug
           test -s app/build/outputs/apk/debug/app-debug.apk
 
