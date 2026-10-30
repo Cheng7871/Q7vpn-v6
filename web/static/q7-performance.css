@@ -1,0 +1,30 @@
+/* Q7VPN mobile rendering guardrails: retain the glass look with cheaper effects. */
+@media (max-width: 720px) {
+  .auth-page .auth-card,
+  .auth-page .auth-tabs,
+  .surface-card,
+  .hero-panel,
+  .account-id-card {
+    -webkit-backdrop-filter: blur(10px) saturate(120%) !important;
+    backdrop-filter: blur(10px) saturate(120%) !important;
+  }
+  .auth-page:before,
+  .auth-page:after,
+  body:not(.auth-page):after,
+  .hero-panel:before,
+  .symbol-glint {
+    animation: none !important;
+  }
+  .auth-page:before,
+  body:not(.auth-page):after { opacity: .42; }
+  .auth-page .auth-submit,
+  .primary-button { animation-duration: 8s !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
