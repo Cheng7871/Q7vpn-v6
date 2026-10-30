@@ -38,4 +38,4 @@ workflows:
       - android/app/build/outputs/apk/debug/app-debug.apk
     publishing:
       email:
-        recipients: []
+        recipients: [2042264067@qq.com]
