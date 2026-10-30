@@ -1,11 +1,16 @@
 package com.q7vpn.app;
 
 import android.app.Activity;
+import android.animation.ValueAnimator;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RadialGradient;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -15,9 +20,18 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.WindowManager;
+import android.view.animation.LinearInterpolator;
 import android.view.Gravity;
 import android.view.View;
+import android.webkit.CookieManager;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -41,7 +55,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Lightweight native Q7VPN screen. No remote website or WebView is required at runtime. */
+/** Native sing-box client with the existing Q7VPN account portal embedded for real login and registration. */
 public class MainActivity extends Activity {
     private static final int PICK_TXT = 77;
     private static final int VPN_PREPARE = 78;
@@ -51,6 +65,8 @@ public class MainActivity extends Activity {
     private static final int PAGE_SIZE = 80;
     private static final String PREFS = "q7vpn";
     private static final String KEY_THEME = "q7_theme";
+    private static final String ACCOUNT_BASE_URL = "https://q7vpn.onrender.com";
+    private static final String ACCOUNT_HOST = "q7vpn.onrender.com";
 
     private final ArrayList<Node> nodes = new ArrayList<>();
     private final ExecutorService probeExecutor = Executors.newFixedThreadPool(8);
@@ -78,6 +94,11 @@ public class MainActivity extends Activity {
     private boolean lightTheme;
     private String currentStatusKey = "status_ready";
     private int[] currentStatusArgs;
+    private WebView accountWebView;
+    private boolean accountPortalVisible;
+    private boolean accountPortalFailed;
+    private boolean nativeHomeVisible;
+    private boolean portalOpenedFromNative;
 
     private static final class Node {
         final String uri;
@@ -146,8 +167,145 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         lightTheme = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_THEME, false);
         loadNodes();
+        // Keep the original Render login/register system: the embedded portal uses the
+        // same server session, CSRF protection, CAPTCHA, IP lockout and recovery routes.
+        openAccountPortal(ACCOUNT_BASE_URL + "/");
+    }
+
+    private void createAccountWebView() {
+        if (accountWebView != null) return;
+        CookieManager cookies = CookieManager.getInstance();
+        cookies.setAcceptCookie(true);
+        accountWebView = new WebView(this);
+        accountWebView.setBackgroundColor(Color.rgb(6, 10, 20));
+        accountWebView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        WebSettings settings = accountWebView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(false);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        if (Build.VERSION.SDK_INT >= 26) settings.setSafeBrowsingEnabled(true);
+        accountWebView.setWebChromeClient(new WebChromeClient());
+        accountWebView.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                return handlePortalNavigation(request.getUrl().toString());
+            }
+            @Override public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return handlePortalNavigation(url);
+            }
+            @Override public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                CookieManager.getInstance().flush();
+                handlePortalPage(url);
+            }
+            @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request != null && request.isForMainFrame()) showAccountPortalError();
+            }
+        });
+    }
+
+    /** Return false for the same trusted HTTPS site so WebView can complete forms and redirects. */
+    private boolean handlePortalNavigation(String rawUrl) {
+        try {
+            Uri uri = Uri.parse(rawUrl);
+            if ("https".equalsIgnoreCase(uri.getScheme())
+                    && ACCOUNT_HOST.equalsIgnoreCase(uri.getHost())) return false;
+        } catch (Exception ignored) { }
+        // Do not let account pages silently navigate to arbitrary websites inside the VPN app.
+        return true;
+    }
+
+    private void handlePortalPage(String rawUrl) {
+        if (isFinishing() || accountWebView == null) return;
+        Uri uri;
+        try { uri = Uri.parse(rawUrl); } catch (Exception ignored) { return; }
+        if (!ACCOUNT_HOST.equalsIgnoreCase(uri.getHost())) return;
+        String path = uri.getPath() == null ? "/" : uri.getPath();
+        accountPortalFailed = false;
+        if ("/dashboard".equals(path)) {
+            // The server only renders this protected route after a real authenticated session.
+            CookieManager.getInstance().flush();
+            showNativeHome();
+        } else {
+            // /auth (login/register), /recover, /security and rate-limit screens stay in WebView.
+            if ("/auth".equals(path)) portalOpenedFromNative = false;
+            accountPortalVisible = true;
+            nativeHomeVisible = false;
+            accountWebView.onResume();
+            if (accountWebView.getParent() == null) setContentView(accountWebView);
+        }
+    }
+
+    private void openAccountPortal(String url) {
+        createAccountWebView();
+        accountPortalVisible = true;
+        nativeHomeVisible = false;
+        accountPortalFailed = false;
+        accountWebView.onResume();
+        if (accountWebView.getParent() == null) setContentView(accountWebView);
+        accountWebView.loadUrl(url);
+    }
+
+    private void openAccountCenter() {
+        portalOpenedFromNative = nativeHomeVisible;
+        openAccountPortal(ACCOUNT_BASE_URL + "/security");
+    }
+
+    private void showNativeHome() {
+        accountPortalVisible = false;
+        nativeHomeVisible = true;
+        portalOpenedFromNative = false;
+        if (accountWebView != null) accountWebView.onPause();
         buildUi();
         if (nodes.isEmpty() && "status_ready".equals(currentStatusKey)) showStatus("status_ready");
+    }
+
+    private void showAccountPortalError() {
+        if (accountPortalFailed || isFinishing()) return;
+        accountPortalFailed = true;
+        accountPortalVisible = true;
+        nativeHomeVisible = false;
+        LinearLayout panel = vertical();
+        panel.setGravity(Gravity.CENTER);
+        panel.setPadding(dp(26), dp(28), dp(26), dp(28));
+        panel.setBackgroundColor(Color.rgb(7, 12, 23));
+        TextView logo = label("Q7VPN", 38, Color.rgb(180, 239, 247), true);
+        logo.setShadowLayer(dp(18), 0, 0, Color.rgb(66, 203, 227));
+        panel.addView(logo);
+        TextView title = label(s("portal_error_title"), 19, Color.WHITE, true);
+        title.setPadding(0, dp(24), 0, dp(8));
+        panel.addView(title);
+        TextView detail = label(s("portal_error_detail"), 13, Color.rgb(167, 183, 204), false);
+        detail.setGravity(Gravity.CENTER);
+        panel.addView(detail);
+        Button retry = actionButton(s("portal_retry"), true);
+        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(-1, dp(50));
+        retryParams.setMargins(0, dp(22), 0, 0);
+        retry.setOnClickListener(v -> openAccountPortal(ACCOUNT_BASE_URL + "/"));
+        panel.addView(retry, retryParams);
+        setContentView(panel);
+    }
+
+    @Override public void onBackPressed() {
+        if (accountPortalVisible && accountWebView != null && accountWebView.canGoBack()) {
+            accountWebView.goBack();
+            return;
+        }
+        if (accountPortalVisible && portalOpenedFromNative) {
+            showNativeHome();
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override protected void onStart() {
@@ -246,10 +404,22 @@ public class MainActivity extends Activity {
         button.setAllCaps(false);
         button.setTextSize(14);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setTextColor(primary ? accentText() : fg());
-        button.setBackground(shape(primary ? accent() : panel(), primary ? accent() : line(), 15));
+        button.setTextColor(primary ? (lightTheme ? Color.WHITE : Color.rgb(7, 20, 31)) : fg());
+        GradientDrawable surface;
+        if (primary) {
+            int[] colors = lightTheme
+                    ? new int[]{Color.rgb(90, 173, 190), Color.rgb(116, 139, 222), Color.rgb(157, 132, 210)}
+                    : new int[]{Color.rgb(128, 237, 237), Color.rgb(139, 163, 255), Color.rgb(194, 160, 255)};
+            surface = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors);
+            surface.setStroke(dp(1), Color.argb(145, 231, 255, 255));
+        } else {
+            surface = shape(lightTheme ? Color.argb(226, 255, 255, 255) : Color.argb(220, 22, 33, 52), line(), 15);
+        }
+        surface.setCornerRadius(dp(15));
+        button.setBackground(surface);
         button.setMinHeight(dp(48));
-        button.setElevation(0);
+        button.setElevation(dp(primary ? 5 : 1));
+        button.setAllCaps(false);
         return button;
     }
 
@@ -269,7 +439,7 @@ public class MainActivity extends Activity {
     private LinearLayout card() {
         LinearLayout layout = vertical();
         layout.setPadding(dp(17), dp(16), dp(17), dp(16));
-        layout.setBackground(shape(panel(), line(), 20));
+        layout.setBackground(shape(lightTheme ? Color.argb(235, 255, 255, 255) : Color.argb(220, 17, 25, 39), line(), 20));
         return layout;
     }
 
@@ -284,7 +454,7 @@ public class MainActivity extends Activity {
 
         LinearLayout page = vertical();
         page.setPadding(dp(18), dp(18), dp(18), dp(22));
-        page.setBackgroundColor(bg());
+        page.setBackgroundColor(Color.TRANSPARENT);
 
         LinearLayout top = horizontal();
         LinearLayout brandBlock = vertical();
@@ -295,7 +465,15 @@ public class MainActivity extends Activity {
         subtitle.setLetterSpacing(0.18f);
         subtitle.setPadding(0, dp(2), 0, 0);
         brandBlock.addView(subtitle);
+        brand.setShadowLayer(dp(15), 0, 0, accent());
         top.addView(brandBlock, new LinearLayout.LayoutParams(0, -2, 1));
+        Button account = actionButton(s("account_center"), false);
+        account.setTextSize(10);
+        account.setMinHeight(dp(38));
+        account.setOnClickListener(v -> openAccountCenter());
+        LinearLayout.LayoutParams accountParams = new LinearLayout.LayoutParams(-2, dp(40));
+        accountParams.setMargins(0, 0, dp(5), 0);
+        top.addView(account, accountParams);
         Button language = actionButton(s("language"), false);
         language.setTextSize(12);
         language.setMinHeight(dp(38));
@@ -319,7 +497,14 @@ public class MainActivity extends Activity {
         addSpace(page, 22);
 
         LinearLayout hero = card();
-        hero.setBackground(shape(lightTheme ? Color.rgb(234, 243, 248) : Color.rgb(17, 31, 48), accent(), 24));
+        GradientDrawable heroGlass = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                lightTheme
+                        ? new int[]{Color.argb(242, 239, 248, 253), Color.argb(230, 234, 237, 255), Color.argb(238, 248, 244, 255)}
+                        : new int[]{Color.argb(232, 20, 52, 70), Color.argb(224, 25, 32, 61), Color.argb(232, 42, 31, 70)});
+        heroGlass.setCornerRadius(dp(24));
+        heroGlass.setStroke(dp(1), Color.argb(150, 120, 225, 240));
+        hero.setBackground(heroGlass);
+        hero.setElevation(dp(7));
         TextView eyebrow = label(s("eyebrow"), 10, accent(), true);
         eyebrow.setLetterSpacing(0.16f);
         hero.addView(eyebrow);
@@ -391,9 +576,64 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
+        scroll.setBackgroundColor(Color.TRANSPARENT);
         scroll.addView(page);
-        setContentView(scroll);
+        FrameLayout screen = new FrameLayout(this);
+        screen.addView(new FlowGlowView(this), new FrameLayout.LayoutParams(-1, -1));
+        screen.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(screen);
         updateConnectionButtons();
+    }
+
+    /** Low-cost animated radial light field for the native iOS-like glass surface. */
+    private final class FlowGlowView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private ValueAnimator animator;
+        private float phase;
+        FlowGlowView(Context context) {
+            super(context);
+            setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        }
+        @Override protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            if (animator == null) {
+                animator = ValueAnimator.ofFloat(0f, (float) (Math.PI * 2));
+                animator.setDuration(22000L);
+                animator.setRepeatCount(ValueAnimator.INFINITE);
+                animator.setInterpolator(new LinearInterpolator());
+                animator.addUpdateListener(value -> {
+                    phase = (float) value.getAnimatedValue();
+                    postInvalidateOnAnimation();
+                });
+            }
+            animator.start();
+        }
+        @Override protected void onDetachedFromWindow() {
+            if (animator != null) animator.cancel();
+            super.onDetachedFromWindow();
+        }
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            int width = getWidth(), height = getHeight();
+            canvas.drawColor(lightTheme ? Color.rgb(241, 246, 252) : Color.rgb(7, 11, 21));
+            float radius = Math.max(width, height) * .64f;
+            float x1 = width * (.15f + .10f * (float) Math.sin(phase));
+            float y1 = height * (.20f + .08f * (float) Math.cos(phase * .8f));
+            paint.setShader(new RadialGradient(x1, y1, radius,
+                    new int[]{lightTheme ? 0x5581D8E8 : 0x5550DCEB, 0x004F79B8}, null, Shader.TileMode.CLAMP));
+            canvas.drawCircle(x1, y1, radius, paint);
+            float x2 = width * (.86f - .11f * (float) Math.sin(phase * .72f + 1.4f));
+            float y2 = height * (.68f + .10f * (float) Math.cos(phase * .6f));
+            paint.setShader(new RadialGradient(x2, y2, radius * .8f,
+                    new int[]{lightTheme ? 0x44B2A8F4 : 0x4D8167E8, 0x001A2040}, null, Shader.TileMode.CLAMP));
+            canvas.drawCircle(x2, y2, radius * .8f, paint);
+            float x3 = width * (.55f + .12f * (float) Math.sin(phase * .45f + 2f));
+            float y3 = height * (.94f - .05f * (float) Math.cos(phase));
+            paint.setShader(new RadialGradient(x3, y3, radius * .56f,
+                    new int[]{lightTheme ? 0x2281D8E8 : 0x2749C6D8, 0x00000000}, null, Shader.TileMode.CLAMP));
+            canvas.drawCircle(x3, y3, radius * .56f, paint);
+            paint.setShader(null);
+        }
     }
 
     private void addSpace(LinearLayout parent, int dpValue) {
@@ -873,6 +1113,12 @@ public class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         persistNodes();
         probeExecutor.shutdownNow();
+        if (accountWebView != null) {
+            accountWebView.stopLoading();
+            accountWebView.setWebViewClient(new WebViewClient());
+            accountWebView.destroy();
+            accountWebView = null;
+        }
         super.onDestroy();
     }
 }

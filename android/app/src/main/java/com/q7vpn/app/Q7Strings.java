@@ -25,6 +25,10 @@ public final class Q7Strings {
         switch (key) {
             case "brand_subtitle": return en ? "PRIVATE NETWORK" : "专属安全网络";
             case "language": return en ? "中文" : "English";
+            case "account_center": return en ? "Account" : "账户";
+            case "portal_error_title": return en ? "Account service is unavailable" : "账户服务暂时无法连接";
+            case "portal_error_detail": return en ? "Check your connection, then retry. Your account portal and registration data have not been changed." : "请检查网络后重试。账户登录和注册数据没有被修改。";
+            case "portal_retry": return en ? "Retry" : "重新连接";
             case "theme_dark": return en ? "Dark" : "深色";
             case "theme_light": return en ? "Light" : "浅色";
             case "eyebrow": return en ? "PRIVATE NETWORK" : "专属网络";
