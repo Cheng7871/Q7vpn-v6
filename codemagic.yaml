@@ -14,15 +14,23 @@ workflows:
           set -e
           echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
 
-      - name: Check project files
+
+      - name: Diagnose project files
         script: |
-          set -e
-          cd "$CM_BUILD_DIR/android"
-          test -f settings.gradle || test -f settings.gradle.kts
-          test -f app/build.gradle || test -f app/build.gradle.kts
-          test -f gradlew
-          chmod +x gradlew
-          java -version
+          echo "===== CURRENT DIRECTORY ====="
+          pwd
+          echo "===== REPOSITORY ROOT ====="
+          ls -la "$CM_BUILD_DIR"
+          echo "===== ANDROID DIRECTORY ====="
+          ls -la "$CM_BUILD_DIR/android" || true
+          echo "===== GRADLE FILES ====="
+          find "$CM_BUILD_DIR" -maxdepth 4 \
+            \( -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "gradlew" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \) -print
+
 
       - name: Build Q7VPN Debug APK
         script: |
