@@ -1,15 +1,8 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#080b13"><title>Q7VPN · 请求过于频繁</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"><script>try{document.documentElement.dataset.theme=localStorage.getItem('q7theme')||'dark';document.documentElement.dataset.accent=localStorage.getItem('q7accent')||'cyan'}catch(e){}</script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#080b13"><title>Q7VPN · 请求过于频繁</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"><link rel="stylesheet" href="{{ url_for('static',filename='q7-performance.css') }}"><script src="{{ url_for('static',filename='q7-i18n.js') }}" defer></script><script>try{document.documentElement.dataset.theme=localStorage.getItem('q7theme')||'dark';document.documentElement.dataset.accent=localStorage.getItem('q7accent')||'cyan'}catch(e){}</script></head>
 <body class="auth-page"><main class="auth-stage">
-  <header class="auth-brand-block">
-    <div class="auth-wordmark" aria-label="Q7VPN"><span>Q7</span><b>VPN</b><i></i></div>
-    <p class="auth-kicker">RATE LIMIT · PLEASE WAIT</p>
-    <h1>请求有点快</h1>
-    <p class="auth-intro">为了保护账户安全，这个操作被临时限制了频率。稍等一会儿再试就好。</p>
-  </header>
-  <div class="auth-card" style="text-align:center">
-    <p style="font-size:13px;color:var(--muted);line-height:1.9;margin:0 0 18px">如果是登录或注册，建议先刷新验证码再提交；找回密码每 5 次／分钟上限。</p>
-    <a class="auth-submit" style="justify-content:center;text-decoration:none" href="{{ url_for('index') }}">返回 Q7VPN <span>↗</span></a>
-  </div>
+  <div class="global-controls" style="justify-content:flex-end"><button type="button" class="glass-control language-control" onclick="toggleLanguage()"><span id="language-label">中文 / EN</span></button></div>
+  <header class="auth-brand-block"><div class="auth-wordmark" aria-label="Q7VPN"><span>Q7</span><b>VPN</b><i></i></div><p class="auth-kicker">RATE LIMIT · PLEASE WAIT</p><h1>请求有点快</h1><p class="auth-intro">为了保护账户安全，这个操作被临时限制了频率。稍等一会儿再试就好。</p></header>
+  <div class="auth-card" style="text-align:center"><p style="font-size:13px;color:var(--muted);line-height:1.9;margin:0 0 18px">如果是登录或注册，建议先刷新验证码再提交；找回密码每 5 次／分钟上限。</p><a class="auth-submit" style="justify-content:center;text-decoration:none" href="{{ url_for('index') }}">返回 Q7VPN <span>↗</span></a></div>
   <footer class="auth-footer"><span class="footer-mini-brand">Q7VPN</span><span>SECURE BY DESIGN</span></footer>
 </main></body></html>
