@@ -1,24 +1,41 @@
-/* Q7VPN mobile rendering guardrails: retain the glass look with cheaper effects. */
+/* Q7VPN mobile performance profile: keep the signature flowing light, reduce only costly blur. */
 @media (max-width: 720px) {
   .auth-page .auth-card,
   .auth-page .auth-tabs,
   .surface-card,
   .hero-panel,
   .account-id-card {
-    -webkit-backdrop-filter: blur(10px) saturate(120%) !important;
-    backdrop-filter: blur(10px) saturate(120%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(125%) !important;
+    backdrop-filter: blur(10px) saturate(125%) !important;
   }
-  .auth-page:before,
-  .auth-page:after,
-  body:not(.auth-page):after,
-  .hero-panel:before,
-  .symbol-glint {
-    animation: none !important;
+  /* Keep the two original animated layers alive on phones. Their transforms are compositor-friendly. */
+  .auth-page:before {
+    opacity: .76 !important;
+    animation: nebulaDrift 26s ease-in-out infinite alternate !important;
+    will-change: transform;
   }
-  .auth-page:before,
-  body:not(.auth-page):after { opacity: .42; }
-  .auth-page .auth-submit,
-  .primary-button { animation-duration: 8s !important; }
+  .auth-page:after {
+    opacity: .24 !important;
+    animation: cyberSweep 19s linear infinite !important;
+    will-change: background-position;
+  }
+  body:not(.auth-page):after {
+    opacity: .42 !important;
+    animation: q7AppNebula 29s ease-in-out infinite alternate,
+               q7AppScan 23s linear infinite !important;
+    will-change: transform, background-position;
+  }
+  .brand-wordmark,
+  .auth-page .auth-wordmark { animation-duration: 10s !important; }
+  .auth-page .auth-submit:before { animation: buttonShine 8s ease-in-out infinite !important; }
+  .symbol-glint { animation: pulse 5s ease-in-out infinite !important; }
+  .auth-page .auth-card,
+  .surface-card,
+  .hero-panel { box-shadow: 0 14px 38px rgba(0,0,0,.20), inset 0 1px rgba(255,255,255,.08); }
+}
+@media (max-width: 380px) {
+  .auth-page:before { opacity: .68 !important; }
+  .auth-page:after { opacity: .20 !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
