@@ -1,0 +1,27 @@
+
+format_version: '11'
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: android
+
+workflows:
+  q7vpn-v6-android-debug:
+    steps:
+      - git-clone@8: {}
+
+      - install-missing-android-tools@3:
+          inputs:
+            - gradle_version: "8.9"
+            - android_compile_sdk_version: "35"
+            - android_build_tools_version: "35.0.0"
+
+      - script@1:
+          title: Build Q7VPN V6 Debug APK
+          inputs:
+            - content: |
+                set -euo pipefail
+                cd android
+                chmod +x gradlew
+                ./gradlew --no-daemon --stacktrace :app:assembleDebug
+                test -s app/build/outputs/apk/debug/app-debug.apk
+
+      - deploy-to-bitrise-io@2: {}
