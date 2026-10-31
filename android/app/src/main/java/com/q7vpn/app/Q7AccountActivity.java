@@ -178,6 +178,15 @@ public final class Q7AccountActivity extends Activity {
         TextView heading = text(title,25,Color.WHITE,true); heading.setGravity(Gravity.CENTER); heading.setPadding(0,dp(10),0,dp(4)); page.addView(heading);
         TextView subtitle = text(intro,11,Color.rgb(169,190,213),false); subtitle.setGravity(Gravity.CENTER); page.addView(subtitle); space(page,23);
 
+        // Shared card container for login, registration and password recovery forms.
+        // Keep this declaration before any field is added to the card.
+        LinearLayout card = vertical();
+        card.setPadding(dp(17), dp(18), dp(17), dp(18));
+        card.setBackground(surface(
+                new int[]{Color.argb(242,24,43,62), Color.argb(244,11,18,32), Color.argb(241,25,22,45)},
+                Color.argb(105,130,227,239), 23));
+        card.setElevation(dp(9));
+
         if ("login".equals(mode) || "register".equals(mode)) {
             boolean registering = "register".equals(mode);
             username = field(card, registering ? tr("用户名","Username") : tr("用户名 / 专属 ID","Username / Account ID"),
