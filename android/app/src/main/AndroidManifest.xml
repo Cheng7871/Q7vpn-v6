@@ -17,6 +17,11 @@
         android:usesCleartextTraffic="false">
 
         <activity
+            android:name=".Q7AccountActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
@@ -28,7 +33,7 @@
         <service
             android:name=".Q7VpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false"
+            android:exported="true"
             android:stopWithTask="false"
             android:foregroundServiceType="systemExempted">
             <intent-filter>
