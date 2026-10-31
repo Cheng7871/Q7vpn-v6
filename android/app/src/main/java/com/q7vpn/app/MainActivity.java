@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
     private final Handler batchHandler = new Handler(Looper.getMainLooper());
     private final ArrayList<Node> validationQueue = new ArrayList<>();
     private final ArrayList<Node> validatedNodes = new ArrayList<>();
+    private final java.util.HashMap<Node, View> nodeRows = new java.util.HashMap<>();
     private int validationIndex;
     private int validationPassed;
     private Node validatingNode;
@@ -72,6 +73,7 @@ public class MainActivity extends Activity {
     private boolean ignoreBatchStopStatus;
     private final Runnable validationTimeout = () -> finishNodeValidation(false);
     private LinearLayout nodeList;
+    private FrameLayout screenRoot;
     private TextView nodeCountView;
     private TextView statusView;
     private Button connectButton;
@@ -438,6 +440,7 @@ public class MainActivity extends Activity {
         FrameLayout screen = new FrameLayout(this);
         screen.addView(new FlowGlowView(this), new FrameLayout.LayoutParams(-1, -1));
         screen.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        screenRoot = screen;
         setContentView(screen);
         updateConnectionButtons();
     }
@@ -506,6 +509,7 @@ public class MainActivity extends Activity {
 
     private void renderNodeList() {
         if (nodeList == null) return;
+        nodeRows.clear();
         nodeList.removeAllViews();
         if (nodeCountView != null) nodeCountView.setText(nodeSummary());
         if (nodes.isEmpty()) {
@@ -519,6 +523,7 @@ public class MainActivity extends Activity {
         int shown = Math.min(nodes.size(), visibleNodeCount);
         for (int i = 0; i < shown; i++) {
             final Node node = nodes.get(i);
+            if (batchValidation && "unusable".equals(node.portState)) continue;
             LinearLayout item = card();
             LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(-1, -2);
             itemParams.setMargins(0, 0, 0, dp(9));
@@ -571,6 +576,7 @@ public class MainActivity extends Activity {
             row.addView(remove, removeParams);
             item.addView(row);
             nodeList.addView(item, itemParams);
+            nodeRows.put(node, item);
         }
 
         if (shown < nodes.size()) {
@@ -580,6 +586,84 @@ public class MainActivity extends Activity {
                 renderNodeList();
             });
             nodeList.addView(more);
+        }
+    }
+
+    private void animateNodeAway(Node node) {
+        View row = nodeRows.remove(node);
+        if (row == null) return;
+        if (screenRoot != null && row.getWidth() > 0 && row.getHeight() > 0) {
+            int[] rowPos = new int[2];
+            int[] rootPos = new int[2];
+            row.getLocationOnScreen(rowPos);
+            screenRoot.getLocationOnScreen(rootPos);
+            ParticleBurstView burst = new ParticleBurstView(this,
+                    rowPos[0] - rootPos[0] + row.getWidth() * 0.52f,
+                    rowPos[1] - rootPos[1] + row.getHeight() * 0.50f);
+            screenRoot.addView(burst, new FrameLayout.LayoutParams(-1, -1));
+            burst.setOnFinished(() -> screenRoot.removeView(burst));
+            burst.start();
+        }
+        row.animate().alpha(0f).translationX(dp(30)).scaleX(.92f).scaleY(.92f).setDuration(520L)
+                .withEndAction(() -> {
+                    if (row.getParent() instanceof android.view.ViewGroup) {
+                        ((android.view.ViewGroup) row.getParent()).removeView(row);
+                    }
+                }).start();
+    }
+
+    /** Lightweight dust burst overlay used when a failed candidate is removed from the list. */
+    private final class ParticleBurstView extends View {
+        private final Paint particlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float originX, originY;
+        private final int[] colors = new int[]{0xff78e6ed, 0xffa5c8ff, 0xffe1b7ff, 0xffffd39a};
+        private ValueAnimator animator;
+        private Runnable onFinished;
+        private float progress;
+
+        ParticleBurstView(Context context, float x, float y) {
+            super(context);
+            originX = x;
+            originY = y;
+            setWillNotDraw(false);
+        }
+
+        void setOnFinished(Runnable action) { onFinished = action; }
+
+        void start() {
+            animator = ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(560L);
+            animator.setInterpolator(new LinearInterpolator());
+            animator.addUpdateListener(value -> {
+                progress = (Float) value.getAnimatedValue();
+                invalidate();
+            });
+            animator.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator animation) {
+                    if (onFinished != null) onFinished.run();
+                }
+            });
+            animator.start();
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float fade = 1f - progress;
+            for (int i = 0; i < 22; i++) {
+                double angle = (Math.PI * 2d * i / 22d) + (i % 3) * .13d;
+                float travel = dp(12 + (i % 5) * 5) * progress;
+                float x = originX + (float) Math.cos(angle) * travel;
+                float y = originY + (float) Math.sin(angle) * travel + dp(10) * progress * progress;
+                float radius = dp(1.2f + (i % 4) * .45f) * (1f - progress * .35f);
+                particlePaint.setColor(colors[i % colors.length]);
+                particlePaint.setAlpha((int) (220 * fade));
+                canvas.drawCircle(x, y, radius, particlePaint);
+            }
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            if (animator != null) animator.cancel();
+            super.onDetachedFromWindow();
         }
     }
 
@@ -811,7 +895,7 @@ public class MainActivity extends Activity {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
             else startService(intent);
             // A broken node can fail before the service emits its error callback.
-            batchHandler.postDelayed(validationTimeout, 30000L);
+            batchHandler.postDelayed(validationTimeout, 12000L);
         } catch (Exception error) {
             finishNodeValidation(false);
         }
@@ -847,11 +931,12 @@ public class MainActivity extends Activity {
             validationPassed++;
         } else {
             completed.portState = "unusable";
+            animateNodeAway(completed);
         }
         // Tear down this candidate's TUN/core before the next one starts.
         stopValidationTunnel();
-        batchHandler.postDelayed(this::startNextNodeValidation, 900L);
-        renderNodeList();
+        batchHandler.postDelayed(this::startNextNodeValidation, 700L);
+        if (passed) renderNodeList();
     }
 
     private void finishBatchNodeValidation() {
@@ -954,8 +1039,8 @@ public class MainActivity extends Activity {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(endpoint).openConnection();
-            connection.setConnectTimeout(6500);
-            connection.setReadTimeout(6500);
+            connection.setConnectTimeout(2000);
+            connection.setReadTimeout(2000);
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Cache-Control", "no-cache, no-store");

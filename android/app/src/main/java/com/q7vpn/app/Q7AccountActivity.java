@@ -16,16 +16,16 @@ import android.os.CountDownTimer;
 import android.view.Gravity;
 import android.view.View;
 import android.view.animation.LinearInterpolator;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.Locale;
+import android.text.method.PasswordTransformationMethod;
+import android.text.method.HideReturnsTransformationMethod;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -41,15 +41,16 @@ public final class Q7AccountActivity extends Activity {
     private Q7AccountClient client;
     private String target = TARGET_HOME;
     private String mode = "login";
-    private String csrf = "", captchaCode = "", recoveryCsrf = "", recoveryQuestion = "";
+    private String csrf = "", captchaCode = "", recoveryCsrf = "", recoveryToken = "", recoveryAccountId = "", recoveryUsername = "", recoveryPhone = "";
     private String noticeText = "";
     private int lockSeconds;
     private boolean busy, lightTheme, sessionAuthenticated;
-    private EditText username, password, phone, answer, captcha, newPassword;
-    private EditText currentPassword, confirmPassword;
-    private Spinner securityQuestion;
+    private EditText username, password, phone, captcha, confirmPassword, newPassword, currentPassword, recoveryCode;
+    private TextView usernameError, passwordError, phoneError, confirmError, captchaError;
+    private CaptchaView captchaImageView;
     private Q7AccountClient.AccountInfo accountInfo;
-    private CountDownTimer lockTimer;
+    private CountDownTimer lockTimer, recoveryTimer;
+    private long recoveryExpiresAtMillis;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -132,6 +133,7 @@ public final class Q7AccountActivity extends Activity {
     }
 
     private void renderAuth(String requestedMode, String notice, Q7AccountClient.Bootstrap bootstrap) {
+        if (recoveryTimer != null) { recoveryTimer.cancel(); recoveryTimer = null; }
         mode = requestedMode;
         if (bootstrap != null) {
             csrf = bootstrap.csrf == null ? "" : bootstrap.csrf;
@@ -177,36 +179,19 @@ public final class Q7AccountActivity extends Activity {
         TextView subtitle = text(intro,11,Color.rgb(169,190,213),false); subtitle.setGravity(Gravity.CENTER); page.addView(subtitle); space(page,23);
 
         if ("login".equals(mode) || "register".equals(mode)) {
-            LinearLayout tabs = horizontal(); tabs.setPadding(dp(4),dp(4),dp(4),dp(4));
-            tabs.setBackground(surface(new int[]{Color.argb(210,8,16,28),Color.argb(210,18,22,42)},borderColor(),15));
-            Button login = button(tr("登录账户","Sign in"),"login".equals(mode));
-            login.setOnClickListener(v -> renderAuth("login","",null));
-            Button register = button(tr("创建账户","Create account"),"register".equals(mode));
-            register.setOnClickListener(v -> renderAuth("register","",null));
-            tabs.addView(login,new LinearLayout.LayoutParams(0,dp(42),1));
-            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0,dp(42),1); rp.setMargins(dp(5),0,0,0); tabs.addView(register,rp);
-            page.addView(tabs); space(page,12);
-        }
-
-        LinearLayout card = vertical(); card.setPadding(dp(17),dp(18),dp(17),dp(18));
-        card.setBackground(surface(new int[]{Color.argb(242,24,43,62),Color.argb(244,11,18,32),Color.argb(241,25,22,45)},Color.argb(105,130,227,239),23));
-        card.setElevation(dp(9));
-
-        if ("login".equals(mode) || "register".equals(mode)) {
-            username = field(card,tr("用户名","Username"),"register".equals(mode) ? tr("例如 q7_user","e.g. q7_user") : tr("用户名或 Q7-0000001","Username or Q7-0000001"),android.text.InputType.TYPE_CLASS_TEXT);
-            password = field(card,tr("登录密码","Password"),tr("至少 10 位","At least 10 characters"),android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-            if ("register".equals(mode)) {
+            boolean registering = "register".equals(mode);
+            username = field(card, registering ? tr("用户名","Username") : tr("用户名 / 专属 ID","Username / Account ID"),
+                    registering ? tr("3–8 位文字或字母","3–8 characters or letters") : tr("用户名或 Q7-0000001","Username or Q7-0000001"),
+                    android.text.InputType.TYPE_CLASS_TEXT);
+            usernameError = fieldError(card);
+            password = passwordField(card, registering ? tr("设置密码","Create password") : tr("登录密码","Password"),
+                    registering ? tr("8–12 位","8–12 characters") : tr("输入登录密码","Enter password"));
+            passwordError = fieldError(card);
+            if (registering) {
+                confirmPassword = passwordField(card,tr("确认密码","Confirm password"),tr("再次输入密码","Re-enter password"));
+                confirmError = fieldError(card);
                 phone = field(card,tr("手机号","Phone number"),tr("用于账户找回（不发送短信）","For account recovery (no SMS)"),android.text.InputType.TYPE_CLASS_PHONE);
-                label(card,tr("安全问题","Security question"));
-                securityQuestion = new Spinner(this);
-                String[] options = english()
-                        ? new String[]{"What was your favorite teacher's last name?","What was your first pet's name?","What is your favorite city?"}
-                        : new String[]{"我童年最喜欢的老师姓什么？","我第一只宠物叫什么？","我最喜欢的城市是哪里？"};
-                ArrayAdapter<String> adapter = new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,options);
-                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); securityQuestion.setAdapter(adapter);
-                securityQuestion.setBackground(surface(new int[]{Color.rgb(10,18,31),Color.rgb(16,23,39)},borderColor(),12));
-                LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1,dp(47)); sp.setMargins(0,0,0,dp(12)); card.addView(securityQuestion,sp);
-                answer = field(card,tr("安全答案","Security answer"),tr("请使用不容易被猜到的答案","Choose a hard-to-guess answer"),android.text.InputType.TYPE_CLASS_TEXT);
+                phoneError = fieldError(card);
             }
             label(card,tr("图片验证码","Image verification code"));
             LinearLayout captchaRow = horizontal();
@@ -215,11 +200,15 @@ public final class Q7AccountActivity extends Activity {
             captcha.setLetterSpacing(.12f); captcha.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
             captcha.setPadding(dp(13),dp(9),dp(13),dp(9)); captcha.setBackground(surface(new int[]{Color.rgb(8,16,29),Color.rgb(13,23,38)},borderColor(),12));
             captchaRow.addView(captcha,new LinearLayout.LayoutParams(0,dp(52),1));
-            CaptchaView image = new CaptchaView(this); image.setCode(captchaCode);
+            captchaImageView = new CaptchaView(this); captchaImageView.setCode(captchaCode);
             LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(132),dp(52)); cp.setMargins(dp(8),0,0,0);
-            captchaRow.addView(image,cp); image.setOnClickListener(v -> refreshCaptcha()); card.addView(captchaRow);
-            TextView hint = text(tr("验证码有效期 10 分钟，点击图片可更换。","Valid for 10 minutes. Tap image to refresh."),9,Color.rgb(147,166,190),false);
-            hint.setPadding(0,dp(6),0,dp(10)); card.addView(hint);
+            captchaRow.addView(captchaImageView,cp); captchaImageView.setOnClickListener(v -> refreshCaptcha()); card.addView(captchaRow);
+            captchaError = fieldError(card);
+            Button refresh = button(tr("换一批","Refresh codes"),false);
+            refresh.setTextSize(10); refresh.setOnClickListener(v -> refreshCaptcha());
+            LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(-2,dp(34)); refreshParams.setMargins(0,dp(6),0,0); card.addView(refresh,refreshParams);
+            TextView hint = text(tr("图片验证码有效期 10 分钟。","Image code is valid for 10 minutes."),9,Color.rgb(147,166,190),false);
+            hint.setPadding(0,dp(4),0,dp(10)); card.addView(hint);
             Button submit = button("register".equals(mode)?tr("创建 Q7VPN 账户","Create Q7VPN account"):tr("登录 Q7VPN","Sign in to Q7VPN"),true);
             submit.setTextSize(15); submit.setOnClickListener(v -> submitAuth()); card.addView(submit,new LinearLayout.LayoutParams(-1,dp(53)));
             if (lockSeconds > 0) {
@@ -227,17 +216,37 @@ public final class Q7AccountActivity extends Activity {
             }
             if ("login".equals(mode)) {
                 TextView forgot = text(tr("忘记密码？","Forgot password?"),11,Color.rgb(120,223,237),true);
-                forgot.setPadding(0,dp(13),0,0); forgot.setOnClickListener(v -> renderAuth("recover_lookup","",null)); card.addView(forgot);
+                forgot.setPadding(0,dp(13),0,0); forgot.setOnClickListener(v -> openRecovery()); card.addView(forgot);
             }
         } else if ("recover_lookup".equals(mode)) {
-            username = field(card,tr("注册用户名","Registered username"),tr("输入注册用户名","Enter username"),android.text.InputType.TYPE_CLASS_TEXT);
-            phone = field(card,tr("注册手机号","Registered phone number"),tr("输入注册手机号","Enter phone number"),android.text.InputType.TYPE_CLASS_PHONE);
-            Button lookup = button(tr("查询安全问题","Find security question"),true); lookup.setOnClickListener(v -> lookupRecovery()); card.addView(lookup,new LinearLayout.LayoutParams(-1,dp(50)));
+            username = field(card,tr("用户名 / 专属 ID","Username / Account ID"),tr("输入用户名或 Q7-0000001","Enter username or Q7 ID"),android.text.InputType.TYPE_CLASS_TEXT);
+            phone = field(card,tr("注册手机号","Registered phone number"),tr("必须与注册时填写的一致","Must match your registered phone"),android.text.InputType.TYPE_CLASS_PHONE);
+            label(card,tr("图片验证码","Image verification code"));
+            LinearLayout captchaRow = horizontal();
+            captcha = fieldWithoutLabel(tr("输入右侧 4 位验证码","Enter the 4-character code"));
+            captchaRow.addView(captcha,new LinearLayout.LayoutParams(0,dp(52),1));
+            captchaImageView = new CaptchaView(this); captchaImageView.setCode(captchaCode);
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(132),dp(52)); cp.setMargins(dp(8),0,0,0);
+            captchaRow.addView(captchaImageView,cp); captchaImageView.setOnClickListener(v -> refreshCaptcha()); card.addView(captchaRow);
+            captchaError = fieldError(card);
+            Button refresh = button(tr("换一批","Refresh codes"),false); refresh.setTextSize(10); refresh.setOnClickListener(v -> refreshCaptcha());
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(-2,dp(34)); rlp.setMargins(0,dp(6),0,dp(8)); card.addView(refresh,rlp);
+            TextView securityHint = text(tr("注意：图片验证码只用于拦截自动化请求，不验证手机号归属。知道账户 ID 和注册手机号的人可能重置密码。","Note: the image code only blocks automated requests; it does not prove phone ownership. Someone who knows both your account ID and registered phone may reset the password."),9,Color.rgb(255,190,155),false);
+            securityHint.setPadding(0,dp(7),0,dp(12)); card.addView(securityHint);
+            Button lookup = button(tr("生成 5 分钟恢复凭证","Generate 5-minute recovery pass"),true); lookup.setOnClickListener(v -> lookupRecovery()); card.addView(lookup,new LinearLayout.LayoutParams(-1,dp(50)));
         } else {
-            TextView q = text(recoveryQuestion,12,Color.rgb(195,221,236),true); q.setPadding(0,0,0,dp(10)); card.addView(q);
-            answer = field(card,tr("安全答案","Security answer"),tr("输入安全答案","Enter security answer"),android.text.InputType.TYPE_CLASS_TEXT);
-            newPassword = field(card,tr("新密码","New password"),tr("至少 10 位","At least 10 characters"),android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-            Button reset = button(tr("重置密码","Reset password"),true); reset.setOnClickListener(v -> resetPassword()); card.addView(reset,new LinearLayout.LayoutParams(-1,dp(50)));
+            TextView bill = text(tr("恢复账户凭证","Account recovery pass"),18,Color.WHITE,true); card.addView(bill);
+            TextView summary = text(recoveryAccountId+"  ·  @"+recoveryUsername+"\n"+maskPhone(recoveryPhone)+"\n"+tr("临时密码有效期：5 分钟","Temporary password valid for 5 minutes"),11,Color.rgb(190,214,231),false);
+            summary.setPadding(0,dp(10),0,dp(12)); card.addView(summary);
+            TextView pass = text(recoveryToken,18,Color.rgb(144,240,231),true); pass.setTextIsSelectable(true); card.addView(pass);
+            recoveryCode = field(card,tr("临时恢复密码","Temporary recovery password"),tr("输入上方临时密码","Enter the temporary password above"),android.text.InputType.TYPE_CLASS_TEXT);
+            recoveryCode.setText(recoveryToken);
+            newPassword = passwordField(card,tr("新密码","New password"),tr("8–12 位","8–12 characters"));
+            confirmPassword = passwordField(card,tr("确认新密码","Confirm new password"),tr("再次输入新密码","Re-enter new password"));
+            Button reset = button(tr("确认修改密码","Confirm password change"),true); reset.setOnClickListener(v -> resetPassword()); card.addView(reset,new LinearLayout.LayoutParams(-1,dp(50)));
+            TextView expiry = text("",10,Color.rgb(255,183,193),false);
+            expiry.setPadding(0,dp(10),0,0); card.addView(expiry);
+            startRecoveryTimer(expiry);
         }
 
         if (!noticeText.isEmpty()) {
@@ -264,44 +273,133 @@ public final class Q7AccountActivity extends Activity {
         e.setBackground(surface(new int[]{Color.rgb(8,16,29),Color.rgb(14,24,40)},Color.argb(80,131,213,234),12));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(47)); lp.setMargins(0,0,0,dp(11)); parent.addView(e,lp); return e;
     }
+    private EditText fieldWithoutLabel(String hint) {
+        EditText e=new EditText(this); e.setSingleLine(true); e.setTextSize(13); e.setTextColor(Color.WHITE);
+        e.setHintTextColor(Color.rgb(123,145,169)); e.setHint(hint); e.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        e.setPadding(dp(13),dp(8),dp(13),dp(8));
+        e.setBackground(surface(new int[]{Color.rgb(8,16,29),Color.rgb(14,24,40)},Color.argb(80,131,213,234),12)); return e;
+    }
+    private TextView fieldError(LinearLayout parent) {
+        TextView t=text("",10,Color.rgb(255,105,125),false); t.setPadding(dp(2),0,dp(2),dp(7)); t.setVisibility(View.GONE); parent.addView(t); return t;
+    }
+    private void showError(TextView view,String message) {
+        if(view==null)return; view.setText(message==null?"":message); view.setVisibility(message==null||message.isEmpty()?View.GONE:View.VISIBLE);
+    }
+    private EditText passwordField(LinearLayout parent,String title,String hint) {
+        label(parent,title); LinearLayout row=horizontal(); EditText e=new EditText(this);
+        e.setSingleLine(true); e.setTextSize(13); e.setTextColor(Color.WHITE); e.setHintTextColor(Color.rgb(123,145,169));
+        e.setHint(hint); e.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD); e.setPadding(dp(13),dp(8),dp(8),dp(8));
+        e.setBackground(surface(new int[]{Color.rgb(8,16,29),Color.rgb(14,24,40)},Color.argb(80,131,213,234),12));
+        row.addView(e,new LinearLayout.LayoutParams(0,dp(47),1)); Button eye=button("◉",false); eye.setTextSize(15);
+        LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(dp(44),dp(47)); ep.setMargins(dp(6),0,0,0); row.addView(eye,ep);
+        eye.setOnClickListener(v->{int pos=e.getSelectionStart();boolean hidden=e.getTransformationMethod() instanceof PasswordTransformationMethod;
+            e.setTransformationMethod(hidden?HideReturnsTransformationMethod.getInstance():PasswordTransformationMethod.getInstance()); eye.setText(hidden?"◎":"◉"); if(pos>=0)e.setSelection(Math.min(pos,e.length()));});
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2); lp.setMargins(0,0,0,dp(11)); parent.addView(row,lp); return e;
+    }
+    private String maskPhone(String value) { if(value==null||value.length()<7)return value==null?"":value; return value.substring(0,3)+"****"+value.substring(value.length()-4); }
     private String value(EditText e) { return e==null||e.getText()==null?"":e.getText().toString().trim(); }
     private void space(LinearLayout p,int n) { View v=new View(this); p.addView(v,new LinearLayout.LayoutParams(1,dp(n))); }
 
     private void refreshCaptcha() {
-        if(busy)return; busy=true;
-        worker.execute(()->{Q7AccountClient.Bootstrap b=client.bootstrap("register".equals(mode)?"register":"login"); runOnUiThread(()->{busy=false;renderAuth(mode,b.message,b);});});
+        if(busy)return; busy=true; final String currentMode=mode;
+        worker.execute(()->{Q7AccountClient.Bootstrap b=client.bootstrap("register".equals(currentMode)?"register":"login"); runOnUiThread(()->{
+            busy=false; csrf=b.csrf; captchaCode=b.captchaCode; lockSeconds=b.lockSeconds;
+            if(captchaImageView!=null)captchaImageView.setCode(captchaCode);
+            if(captcha!=null)captcha.setText(""); showError(captchaError,"");
+            if(!b.message.isEmpty())Toast.makeText(this,translateMessage(b.message),Toast.LENGTH_SHORT).show();
+        });});
     }
     private void submitAuth() {
         if(busy)return;
-        String question="";
-        if(securityQuestion!=null&&securityQuestion.getSelectedItemPosition()>=0){
-            String[] q={"我童年最喜欢的老师姓什么？","我第一只宠物叫什么？","我最喜欢的城市是哪里？"};
-            question=q[Math.min(securityQuestion.getSelectedItemPosition(),q.length-1)];
-        }
-        String submittedMode=mode, selectedQuestion=question; busy=true;
+        String u=value(username), p=value(password), ph=value(phone), cp=value(confirmPassword), cap=value(captcha).toUpperCase(Locale.ROOT);
+        showError(usernameError,""); showError(passwordError,""); showError(phoneError,""); showError(confirmError,""); showError(captchaError,"");
+        boolean registering="register".equals(mode), invalid=false;
+        if(registering && !u.matches("[A-Za-z0-9\u4e00-\u9fff]{3,8}")){showError(usernameError,tr("用户名格式错误：请输入 3–8 位文字、字母或数字。","Username must be 3–8 characters or letters."));invalid=true;}
+        if(registering && (p.length()<8||p.length()>12)){showError(passwordError,tr("密码格式错误：必须为 8–12 位。","Password must be 8–12 characters."));invalid=true;}
+        if(registering && !p.equals(cp)){showError(confirmError,tr("两次密码不一致。","Passwords do not match."));invalid=true;}
+        if(registering && !ph.matches("[+0-9 ()-]{7,24}")){showError(phoneError,tr("手机号格式错误。","Enter a valid phone number."));invalid=true;}
+        if(cap.length()!=4){showError(captchaError,tr("请输入完整的 4 位验证码。","Enter all 4 captcha characters."));invalid=true;}
+        if(invalid)return;
+        busy=true; final String submittedMode=mode;
         worker.execute(()->{
-            Q7AccountClient.AuthResult r=client.submitAuth(submittedMode,value(username),value(password),value(captcha).toUpperCase(Locale.ROOT),value(phone),selectedQuestion,value(answer),csrf);
+            Q7AccountClient.AuthResult r=client.submitAuth(submittedMode,u,p,cp,cap,ph,"legacy-disabled","legacy-disabled",csrf);
             runOnUiThread(()->{
                 busy=false;
                 if(r.loggedIn){sessionAuthenticated=true;if(TARGET_SECURITY.equals(target))loadSecurity();else returnToHome();}
-                else if(r.registered)renderAuth("login",r.message,r.nextBootstrap);
-                else renderAuth(submittedMode,r.message,r.nextBootstrap);
+                else if(r.registered){renderAuth("login",r.message,r.nextBootstrap);}
+                else {
+                    renderAuth(submittedMode,"",r.nextBootstrap);
+                    if(username!=null)username.setText(u); if(password!=null)password.setText(p);
+                    if(phone!=null)phone.setText(ph); if(confirmPassword!=null)confirmPassword.setText(cp);
+                    boolean captchaBad=r.message!=null&&r.message.contains("验证码");
+                    if(captchaBad)showError(captchaError,r.message); else if(r.message!=null){
+                        if(r.message.contains("用户名"))showError(usernameError,r.message);
+                        else if(r.message.contains("确认密码")||r.message.contains("不一致"))showError(confirmError,r.message);
+                        else if(r.message.contains("密码"))showError(passwordError,r.message);
+                        else if(r.message.contains("手机号"))showError(phoneError,r.message);
+                        else Toast.makeText(this,translateMessage(r.message),Toast.LENGTH_LONG).show();
+                    }
+                }
             });
         });
     }
+    private void openRecovery() {
+        if (busy) return;
+        busy = true;
+        worker.execute(() -> {
+            Q7AccountClient.Bootstrap b = client.bootstrap("login");
+            runOnUiThread(() -> {
+                busy = false;
+                target = TARGET_HOME;
+                renderAuth("recover_lookup", b == null ? tr("暂时无法获取验证码，请重试。", "Could not load the image code. Please retry.") : b.message, b);
+            });
+        });
+    }
+
+    private void startRecoveryTimer(TextView view) {
+        long remaining = Math.max(0L, recoveryExpiresAtMillis - System.currentTimeMillis());
+        if (remaining <= 0L) {
+            view.setText(tr("恢复凭证已过期，请重新申请。", "Recovery pass expired. Please request a new one."));
+            return;
+        }
+        recoveryTimer = new CountDownTimer(remaining, 1000L) {
+            @Override public void onTick(long millisUntilFinished) {
+                long seconds = millisUntilFinished / 1000L;
+                view.setText(tr("剩余有效时间：", "Time remaining: ") + String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60)
+                        + tr("（只能使用一次）", " (one use only)"));
+            }
+            @Override public void onFinish() {
+                view.setText(tr("恢复凭证已过期，请重新申请。", "Recovery pass expired. Please request a new one."));
+                recoveryToken = "";
+            }
+        }.start();
+    }
+
     private void lookupRecovery() {
-        if(busy)return; busy=true;
+        if(busy)return;
+        String id=value(username),ph=value(phone),cap=value(captcha).toUpperCase(Locale.ROOT);
+        showError(captchaError,"");
+        if(cap.length()!=4){showError(captchaError,tr("请输入 4 位图片验证码。","Enter the 4-character image code."));return;}
+        busy=true;
         worker.execute(()->{
-            Q7AccountClient.RecoveryResult r=client.beginRecovery(value(username),value(phone));
-            runOnUiThread(()->{busy=false;if(!r.question.isEmpty()){recoveryQuestion=r.question;recoveryCsrf=r.csrf;renderAuth("recover_reset",r.message,null);}else renderAuth("recover_lookup",r.message,null);});
+            Q7AccountClient.RecoveryResult r=client.beginRecovery(id,ph,cap,csrf);
+            runOnUiThread(()->{busy=false;
+                if(r.success){recoveryCsrf=r.csrf;recoveryToken=r.recoveryToken;recoveryAccountId=r.accountId;recoveryUsername=r.username;recoveryPhone=r.phone;recoveryExpiresAtMillis=System.currentTimeMillis()+Math.max(1,r.expiresIn)*1000L;renderAuth("recover_reset","",null);}
+                else {renderAuth("recover_lookup","",r.nextBootstrap);if(username!=null)username.setText(id);if(phone!=null)phone.setText(ph);showError(captchaError,r.message);}
+            });
         });
     }
     private void resetPassword() {
-        if(busy)return; busy=true;
+        if(busy)return;
+        String token=value(recoveryCode),next=value(newPassword),confirm=value(confirmPassword);
+        if(!token.equals(recoveryToken)){Toast.makeText(this,tr("恢复凭证不正确。","Recovery pass does not match."),Toast.LENGTH_LONG).show();return;}
+        if(next.length()<8||next.length()>12){Toast.makeText(this,tr("新密码必须为 8–12 位。","New password must be 8–12 characters."),Toast.LENGTH_LONG).show();return;}
+        if(!next.equals(confirm)){Toast.makeText(this,tr("两次输入的新密码不一致。","Passwords do not match."),Toast.LENGTH_LONG).show();return;}
+        busy=true;
         worker.execute(()->{
-            Q7AccountClient.RecoveryResult r=client.completeRecovery(value(answer),value(newPassword),recoveryCsrf);
-            Q7AccountClient.Bootstrap b=r.success?client.bootstrap("login"):null;
-            runOnUiThread(()->{busy=false;if(r.success)renderAuth("login",r.message,b);else renderAuth("recover_reset",r.message,null);});
+            Q7AccountClient.RecoveryResult r=client.completeRecovery(token,next,confirm,recoveryCsrf);
+            Q7AccountClient.Bootstrap b=r.success?client.bootstrap("login"):r.nextBootstrap;
+            runOnUiThread(()->{busy=false;if(r.success){recoveryToken="";renderAuth("login",r.message,b);}else renderAuth("recover_reset",r.message,b);});
         });
     }
 
@@ -316,7 +414,7 @@ public final class Q7AccountActivity extends Activity {
         LinearLayout page=vertical(); page.setPadding(dp(18),dp(18),dp(18),dp(24));
         LinearLayout top=horizontal(); TextView brand=text("Q7VPN",26,Color.WHITE,true); brand.setShadowLayer(dp(15),0,0,Color.rgb(88,222,237));
         top.addView(brand,new LinearLayout.LayoutParams(0,dp(43),1));
-        Button back=button(tr("返回","Back"),false); back.setOnClickListener(v->finish()); top.addView(back); page.addView(top); space(page,24);
+        Button back=button(tr("返回","Back"),false); back.setOnClickListener(v->backFromSecurity()); top.addView(back); page.addView(top); space(page,24);
         page.addView(text(tr("账户与安全","Account & Security"),26,Color.WHITE,true));
         TextView sub=text(tr("专属身份、密码和账户防护","Your identity, password and account protection"),11,Color.rgb(171,190,211),false);
         sub.setPadding(0,dp(6),0,dp(17)); page.addView(sub);
@@ -327,10 +425,11 @@ public final class Q7AccountActivity extends Activity {
         LinearLayout passwordCard=vertical(); passwordCard.setPadding(dp(16),dp(16),dp(16),dp(16));
         passwordCard.setBackground(surface(new int[]{Color.argb(236,19,31,49),Color.argb(236,13,21,37)},Color.argb(80,123,213,232),19));
         passwordCard.addView(text(tr("修改密码","Change password"),18,Color.WHITE,true));
-        currentPassword=field(passwordCard,tr("当前密码","Current password"),tr("输入当前密码","Enter current password"),android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        newPassword=field(passwordCard,tr("新密码","New password"),tr("至少 10 位","At least 10 characters"),android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        confirmPassword=field(passwordCard,tr("确认新密码","Confirm new password"),tr("再次输入新密码","Re-enter new password"),android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        Button save=button(tr("保存新密码","Save password"),true); save.setOnClickListener(v->changePassword()); passwordCard.addView(save,new LinearLayout.LayoutParams(-1,dp(49))); page.addView(passwordCard);
+        currentPassword=passwordField(passwordCard,tr("当前密码","Current password"),tr("输入当前密码","Enter current password"));
+        newPassword=passwordField(passwordCard,tr("新密码","New password"),tr("8–12 位","8–12 characters"));
+        confirmPassword=passwordField(passwordCard,tr("确认新密码","Confirm new password"),tr("再次输入新密码","Re-enter new password"));
+        Button save=button(tr("保存新密码","Save password"),true); save.setOnClickListener(v->changePassword()); passwordCard.addView(save,new LinearLayout.LayoutParams(-1,dp(49)));
+        TextView forgot=text(tr("忘记密码？","Forgot password?"),11,Color.rgb(120,223,237),true);forgot.setPadding(0,dp(10),0,0);forgot.setOnClickListener(v->openRecovery());passwordCard.addView(forgot); page.addView(passwordCard);
         if(!message.isEmpty()){TextView n=text(translateMessage(message),10,Color.rgb(138,235,203),false);n.setPadding(0,dp(10),0,0);page.addView(n);}
         space(page,16); Button signout=button(tr("退出登录","Sign out"),false); signout.setOnClickListener(v->logout()); page.addView(signout,new LinearLayout.LayoutParams(-1,dp(47)));
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.addView(page);
@@ -341,7 +440,9 @@ public final class Q7AccountActivity extends Activity {
         row.addView(k,new LinearLayout.LayoutParams(0,dp(36),1));row.addView(v);parent.addView(row);
     }
     private void changePassword(){
-        String old=value(currentPassword),next=value(newPassword),confirm=value(confirmPassword);busy=true;
+        String old=value(currentPassword),next=value(newPassword),confirm=value(confirmPassword);
+        if(next.length()<8||next.length()>12){Toast.makeText(this,tr("新密码必须为 8–12 位。","New password must be 8–12 characters."),Toast.LENGTH_LONG).show();return;}
+        if(!next.equals(confirm)){Toast.makeText(this,tr("两次输入的新密码不一致。","Passwords do not match."),Toast.LENGTH_LONG).show();return;} busy=true;
         worker.execute(()->{
             String msg=client.changePassword(accountInfo==null?"":accountInfo.csrf,old,next,confirm);Q7AccountClient.AccountInfo fresh=client.fetchAccountInfo();
             runOnUiThread(()->{busy=false;if(fresh!=null){accountInfo=fresh;renderSecurity(fresh,msg);}else Toast.makeText(this,translateMessage(msg),Toast.LENGTH_LONG).show();});
@@ -369,6 +470,7 @@ public final class Q7AccountActivity extends Activity {
         {"密码已重置，请重新登录。","Password reset. Please sign in again."},{"当前密码不正确，密码没有修改。","Current password is incorrect. Password was not changed."},{"密码修改成功。","Password changed successfully."}};
         String out=msg;for(String[] pair:p)out=out.replace(pair[0],pair[1]);return out;
     }
+    private void backFromSecurity(){ if(sessionAuthenticated)setResult(RESULT_OK); finish(); }
     private void returnToHome(){setResult(RESULT_OK);finish();}
 
     @Override public void onBackPressed(){
@@ -381,7 +483,7 @@ public final class Q7AccountActivity extends Activity {
             });
             return;
         }
-        if(TARGET_SECURITY.equals(target)){if(sessionAuthenticated)setResult(RESULT_OK);finish();return;}
+        if(TARGET_SECURITY.equals(target)){backFromSecurity();return;}
         super.onBackPressed();
     }
     @Override protected void onDestroy(){if(lockTimer!=null)lockTimer.cancel();worker.shutdownNow();super.onDestroy();}

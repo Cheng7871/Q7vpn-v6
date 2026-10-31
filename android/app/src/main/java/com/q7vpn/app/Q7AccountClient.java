@@ -21,7 +21,7 @@ public final class Q7AccountClient {
 
     public static final class Bootstrap { public String csrf="", captchaCode="", message=""; public int lockSeconds; }
     public static final class AuthResult { public boolean loggedIn, registered; public String message=""; public Bootstrap nextBootstrap; }
-    public static final class RecoveryResult { public boolean success; public String csrf="", question="", message=""; }
+    public static final class RecoveryResult { public boolean success; public int expiresIn=300; public String csrf="", recoveryToken="", accountId="", username="", phone="", message=""; public Bootstrap nextBootstrap; }
     public static final class AccountInfo { public String csrf="", accountId="", username="", phone="", nodeCount="", message=""; }
     private static final class HttpResult { int status; String body="", location=""; }
 
@@ -59,12 +59,12 @@ public final class Q7AccountClient {
         return b;
     }
 
-    public AuthResult submitAuth(String mode,String user,String password,String captcha,String phone,String question,String answer,String csrf) {
+    public AuthResult submitAuth(String mode,String user,String password,String confirmPassword,String captcha,String phone,String question,String answer,String csrf) {
         AuthResult out=new AuthResult();
         try {
             Map<String,String> f=new LinkedHashMap<>();
             f.put("csrf_token",csrf); f.put("mode",mode); f.put("username",user); f.put("password",password); f.put("captcha",captcha);
-            if("register".equals(mode)){f.put("phone",phone);f.put("question",question);f.put("answer",answer);}
+            if("register".equals(mode)){f.put("phone",phone);f.put("confirm_password",confirmPassword);f.put("question",question);f.put("answer",answer);}
             HttpResult r=request("POST","/auth",f);
             if(r.status==302&&r.location!=null&&r.location.contains("/dashboard")){out.loggedIn=true;return out;}
             out.message=flash(r.body);
@@ -75,29 +75,35 @@ public final class Q7AccountClient {
         return out;
     }
 
-    public RecoveryResult beginRecovery(String user,String phone) {
+    public RecoveryResult beginRecovery(String user,String phone,String captcha,String csrf) {
         RecoveryResult out=new RecoveryResult();
         try {
-            HttpResult page=request("GET","/recover",null);
-            String token=extract(page.body,"name=[\\\"']csrf_token[\\\"'][^>]*value=[\\\"']([^\\\"']+)",1);
-            Map<String,String> f=new LinkedHashMap<>(); f.put("csrf_token",token); f.put("step","lookup"); f.put("username",user); f.put("phone",phone);
+            Map<String,String> f=new LinkedHashMap<>(); f.put("csrf_token",csrf); f.put("step","lookup");
+            f.put("username",user); f.put("phone",phone); f.put("captcha",captcha);
             HttpResult r=request("POST","/recover",f);
             out.csrf=extract(r.body,"name=[\\\"']csrf_token[\\\"'][^>]*value=[\\\"']([^\\\"']+)",1);
-            out.question=extract(r.body,"<p class=[\\\"']small[\\\"']>\\s*安全问题：([^<]+)</p>",1);
-            out.message=flash(r.body);
-            if(out.question.isEmpty()&&out.message.isEmpty()) out.message="账户信息不匹配或账户不存在。";
-        } catch(Exception e) { out.message="账户服务连接失败，请稍后重试。"; }
+            out.recoveryToken=extract(r.body,"id=[\\\"']recovery-token[\\\"'][^>]*>([^<]+)</",1);
+            out.accountId=extract(r.body,"id=[\\\"']recovery-account-id[\\\"'][^>]*>([^<]+)</",1);
+            out.username=extract(r.body,"id=[\\\"']recovery-username[\\\"'][^>]*>([^<]+)</",1);
+            out.phone=extract(r.body,"id=[\\\"']recovery-phone[\\\"'][^>]*>([^<]+)</",1);
+            out.expiresIn=intExtract(r.body,"id=[\\\"']recovery-expiry[\\\"'][^>]*data-seconds=[\\\"'](\\d+)");
+            if(out.expiresIn<=0)out.expiresIn=300;
+            out.message=flash(r.body); out.success=!out.recoveryToken.isEmpty()&&!out.csrf.isEmpty();
+            if(!out.success){out.nextBootstrap=bootstrap("login");if(out.message.isEmpty())out.message="账号 ID、手机号或图片验证码不匹配。";}
+        } catch(Exception e) { out.message="账户服务器连接失败，请检查网络后重试。"; out.nextBootstrap=bootstrap("login"); }
         return out;
     }
-    public RecoveryResult completeRecovery(String answer,String password,String csrf) {
+    public RecoveryResult completeRecovery(String token,String password,String confirmPassword,String csrf) {
         RecoveryResult out=new RecoveryResult(); out.csrf=csrf;
         try {
-            Map<String,String> f=new LinkedHashMap<>();f.put("csrf_token",csrf);f.put("step","reset");f.put("answer",answer);f.put("new_password",password);
+            Map<String,String> f=new LinkedHashMap<>();f.put("csrf_token",csrf);f.put("step","reset");
+            f.put("recovery_token",token);f.put("new_password",password);f.put("confirm_password",confirmPassword);
             HttpResult r=request("POST","/recover",f);
             out.success=r.status==302&&r.location!=null&&r.location.contains("/auth");
             out.message=flash(r.body);
-            if(out.message.isEmpty())out.message=out.success?"密码已重置，请重新登录。":"验证失败，或新密码不足 10 位。";
-        } catch(Exception e) { out.message="账户服务连接失败，请重试。"; }
+            if(out.message.isEmpty())out.message=out.success?"密码已重置，请重新登录。":"恢复凭证已过期或密码格式不正确。";
+            if(!out.success)out.nextBootstrap=bootstrap("login");
+        } catch(Exception e) { out.message="账户服务器连接失败，请重试。"; out.nextBootstrap=bootstrap("login"); }
         return out;
     }
 
