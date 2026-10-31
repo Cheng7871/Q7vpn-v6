@@ -1,1 +1,68 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Q7VPN · 找回密码</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"><link rel="stylesheet" href="{{ url_for('static',filename='q7-performance.css') }}"><script src="{{ url_for('static',filename='q7-i18n.js') }}" defer></script><script>try{document.documentElement.dataset.theme=localStorage.getItem('q7theme')||'dark'}catch(e){}</script></head><body><div class="global-controls" style="justify-content:flex-end;padding:12px 18px"><button type="button" class="glass-control language-control" onclick="toggleLanguage()"><span id="language-label">中文 / EN</span></button></div><main class="wrap auth-wrap"><div class="center"><div class="logo">◈</div><h1 class="brand">找回密码</h1><p class="sub">通过账户信息与安全答案重置密码</p></div>{% for category,message in get_flashed_messages(with_categories=true) %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}<form method="post" class="card"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% if not question %}<input type="hidden" name="step" value="lookup"><input class="field" name="username" placeholder="注册用户名" required><input class="field" name="phone" placeholder="注册手机号" required><button class="btn">查询安全问题</button>{% else %}<input type="hidden" name="step" value="reset"><p class="small">安全问题：{{ question }}</p><input class="field" name="answer" placeholder="安全答案" required><input class="field" type="password" name="new_password" placeholder="新密码（至少 10 位）" minlength="10" required><button class="btn">重置密码</button>{% endif %}<p class="small center"><a href="{{ url_for('auth') }}">返回登录</a></p></form><p class="footer">Q7VPN · V6</p></main></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080b13"><title>Q7VPN · 找回密码</title>
+<link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static',filename='q7-performance.css') }}">
+<script src="{{ url_for('static',filename='q7-i18n.js') }}" defer></script>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('q7theme')||'dark'}catch(e){}</script>
+</head>
+<body class="auth-page">
+<div class="global-controls" style="justify-content:flex-end;padding:12px 18px">
+  <button type="button" class="glass-control language-control" onclick="toggleLanguage()"><span id="language-label">中文 / EN</span></button>
+</div>
+<main class="auth-stage">
+  <header class="auth-brand-block">
+    <div class="auth-wordmark" aria-label="Q7VPN"><span>Q7</span><b>VPN</b><i></i></div>
+    <p class="auth-kicker">PRIVATE NETWORK · YOUR CONTROL</p>
+    <h1>找回密码</h1>
+    <p class="auth-intro">使用专属 ID、注册手机号和四位图片验证码申请临时恢复凭证</p>
+  </header>
+  {% for category,message in get_flashed_messages(with_categories=true) %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+  <section class="auth-card">
+  {% if recovery_token %}
+    <div class="auth-divider"><span>账户恢复凭证 · 5 分钟有效</span></div>
+    <p class="small">专属 ID</p><h2 id="recovery-account-id">{{ account_id or '—' }}</h2>
+    <p class="small">用户名</p><strong id="recovery-username">{{ username or '—' }}</strong>
+    <p class="small">手机号</p><strong id="recovery-phone">{{ phone or '已核对' }}</strong>
+    <p class="small" style="margin-top:18px">临时恢复密码（只能用于本次改密，不能直接登录）</p>
+    <code id="recovery-token" style="display:block;word-break:break-all;font-size:18px;padding:14px;border-radius:12px;background:rgba(5,12,24,.75)">{{ recovery_token }}</code>
+    <p class="captcha-hint">请在 <strong id="recovery-expiry" data-seconds="{{ expires_in|default(300) }}">05:00</strong> 内完成修改。该临时凭证只能使用一次。</p>
+    <form method="post" action="{{ url_for('recover') }}" class="auth-card" style="padding:0;margin-top:16px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="step" value="reset">
+      <input type="hidden" name="recovery_token" value="{{ recovery_token }}">
+      <label class="field-label" for="new_password">新密码</label>
+      <input class="field auth-field" id="new_password" name="new_password" type="password" placeholder="8–12 位" minlength="8" maxlength="12" required autocomplete="new-password">
+      <label class="field-label" for="confirm_password">确认新密码</label>
+      <input class="field auth-field" id="confirm_password" name="confirm_password" type="password" placeholder="再次输入新密码" minlength="8" maxlength="12" required autocomplete="new-password">
+      <button class="auth-submit" type="submit">确认修改密码<span>↗</span></button>
+    </form>
+  {% else %}
+    <form method="post" action="{{ url_for('recover') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="step" value="lookup">
+      <label class="field-label" for="username">用户名 / 专属 ID</label>
+      <input class="field auth-field" id="username" name="username" placeholder="用户名或 Q7-0000001" required autocomplete="username">
+      <label class="field-label" for="phone">注册手机号</label>
+      <input class="field auth-field" id="phone" name="phone" type="tel" placeholder="输入注册时填写的手机号" required autocomplete="tel">
+      <label class="field-label" for="captcha">图片验证码</label>
+      <div class="captcha-row">
+        <input class="field auth-field captcha-input" id="captcha" name="captcha" placeholder="输入右侧 4 位验证码" maxlength="4" minlength="4" required autocomplete="off" autocapitalize="characters">
+        <button type="button" class="captcha-image-button" onclick="refreshCaptcha()" aria-label="刷新验证码"><img id="captcha-image" src="{{ url_for('captcha_image') }}" alt="图片验证码"><span>换一批</span></button>
+      </div>
+      <p class="captcha-hint">不发送短信或邮件。图片验证码仅用于拦截自动化请求，不验证手机号归属；知道账户 ID 和注册手机号的人可能重置密码。</p>
+      <button class="auth-submit" type="submit">生成 5 分钟恢复凭证<span>↗</span></button>
+    </form>
+  {% endif %}
+  <p class="small center" style="margin-top:18px"><a href="{{ url_for('auth') }}">返回登录</a></p>
+  </section>
+  <footer class="auth-footer"><span class="footer-mini-brand">Q7VPN</span><span>SECURE BY DESIGN</span></footer>
+</main>
+<script>
+function refreshCaptcha(){const img=document.getElementById('captcha-image');if(img)img.src='{{ url_for('captcha_image') }}?refresh=1&t='+Date.now();const input=document.getElementById('captcha');if(input)input.value=''}
+function toggleLanguage(){const lang=localStorage.getItem('q7lang')==='en'?'zh':'en';localStorage.setItem('q7lang',lang);document.documentElement.lang=lang==='en'?'en':'zh-CN';const l=document.getElementById('language-label');if(l)l.textContent=lang==='en'?'EN / 中文':'中文 / EN'}
+const expiry=document.getElementById('recovery-expiry');if(expiry){let left=Number(expiry.dataset.seconds||300);const tick=()=>{if(left<=0){expiry.textContent='已过期';return}expiry.textContent=Math.floor(left/60)+':'+String(left%60).padStart(2,'0');left--;setTimeout(tick,1000)};tick()}
+</script>
+</body></html>
