@@ -12,11 +12,10 @@ from flask_limiter.util import get_remote_address
 
 APP_DIR = os.path.abspath(os.path.dirname(__file__))
 DB_PATH = os.environ.get("Q7VPN_DB_PATH", os.path.join(APP_DIR, "q7vpn.sqlite3"))
-TZ_OFFSET = float(os.environ.get("Q7VPN_TZ_OFFSET", "8"))  # 默认北京时间
+TZ_OFFSET = float(os.environ.get("Q7VPN_TZ_OFFSET", "8"))
 
 
 def _ensure_parent_dir(path):
-    """A missing directory (e.g. an unmounted /var/data disk) makes sqlite3 fail hard at import time."""
     parent = os.path.dirname(os.path.abspath(path))
     if parent and not os.path.isdir(parent):
         try:
@@ -26,7 +25,6 @@ def _ensure_parent_dir(path):
 
 
 def _resolve_secret_key():
-    """Keep sessions alive across restarts when SECRET_KEY is not provided via env."""
     env_secret = os.environ.get("SECRET_KEY", "").strip()
     if env_secret:
         return env_secret
@@ -72,8 +70,6 @@ def _connect():
 
 @contextmanager
 def db():
-    """Every caller used to leak its connection: sqlite3's own context manager only commits, never closes.
-    Leaked handles plus nested writes are what produced `database is locked` under load."""
     con = _connect()
     try:
         yield con
@@ -84,6 +80,7 @@ def db():
     finally:
         con.close()
 
+
 @app.template_filter("timestamp_datetime")
 def timestamp_datetime(value):
     try:
@@ -91,15 +88,15 @@ def timestamp_datetime(value):
     except (TypeError, ValueError, OSError, OverflowError):
         return "—"
 
+
 def init_db(retries=5):
-    """Retried because gunicorn boots several workers that race on CREATE TABLE."""
     for attempt in range(retries):
         try:
             with db() as con:
                 try:
                     con.execute("PRAGMA journal_mode=WAL")
                 except sqlite3.DatabaseError:
-                    pass  # network filesystems refuse WAL; the busy_timeout still covers us
+                    pass
                 con.execute("""CREATE TABLE IF NOT EXISTS users(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
@@ -117,7 +114,6 @@ def init_db(retries=5):
                     ip_hash TEXT NOT NULL,
                     user_id INTEGER
                 )""")
-                # Safe migration for databases created by earlier Q7vpn versions.
                 event_columns = {row[1] for row in con.execute("PRAGMA table_info(security_events)").fetchall()}
                 if "user_id" not in event_columns:
                     con.execute("ALTER TABLE security_events ADD COLUMN user_id INTEGER")
@@ -135,13 +131,32 @@ def init_db(retries=5):
                     window_start INTEGER NOT NULL,
                     locked_until INTEGER NOT NULL DEFAULT 0
                 )""")
+                # Server-side, single-use password recovery tokens. Only SHA-256 hashes
+                # are stored; old signed cookies cannot replay a consumed token.
+                con.execute("""CREATE TABLE IF NOT EXISTS account_recovery_tokens(
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    session_hash TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    used_at INTEGER,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )""")
                 con.execute("CREATE INDEX IF NOT EXISTS idx_events_user ON security_events(user_id, id DESC)")
                 con.execute("CREATE INDEX IF NOT EXISTS idx_nodes_user ON nodes(user_id, id DESC)")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_user ON account_recovery_tokens(user_id, expires_at)")
             return
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc).lower() or attempt == retries - 1:
                 raise
             time.sleep(0.3 * (attempt + 1))
+
+
+def client_ip_hash():
+    ip = get_remote_address() or "unknown"
+    salt = os.environ.get("IP_HASH_SALT", "change-this-salt")
+    return hashlib.sha256((salt + ip).encode()).hexdigest()[:24]
+
 
 def log_event(category, detail, user_id=None):
     ip_hash = client_ip_hash()
@@ -149,6 +164,7 @@ def log_event(category, detail, user_id=None):
     with db() as con:
         con.execute("INSERT INTO security_events(created_at,category,detail,ip_hash,user_id) VALUES(?,?,?,?,?)",
                     (int(time.time()), category, detail[:180], ip_hash, owner_id))
+
 
 def logged_in(f):
     @wraps(f)
@@ -158,12 +174,14 @@ def logged_in(f):
         return f(*args, **kwargs)
     return inner
 
+
 def parse_node(uri):
     uri = uri.strip()
     if uri.startswith("vless://"):
         try:
             u = urlparse(uri)
-            if not u.hostname or not (u.port or 443): return None
+            if not u.hostname or not (u.port or 443):
+                return None
             name = unquote(u.fragment) if u.fragment else u.hostname
             return {"uri": uri, "name": name[:120], "type": "VLESS", "host": u.hostname, "port": u.port or 443}
         except Exception:
@@ -172,23 +190,19 @@ def parse_node(uri):
         try:
             body = uri[5:].split("#", 1)[0]
             name = unquote(uri.split("#", 1)[1]) if "#" in uri else "Shadowsocks 节点"
-            # SS formats vary; preserve URI and validate basic shape without decoding secrets into logs.
-            if "@" not in body and len(body) < 12: return None
+            if "@" not in body and len(body) < 12:
+                return None
             return {"uri": uri, "name": name[:120], "type": "SS", "host": "", "port": ""}
         except Exception:
             return None
     return None
+
 
 @app.route("/")
 def index():
     if session.get("user_id"):
         return redirect(url_for("dashboard"))
     return redirect(url_for("auth"))
-
-def client_ip_hash():
-    ip = get_remote_address() or "unknown"
-    salt = os.environ.get("IP_HASH_SALT", "change-this-salt")
-    return hashlib.sha256((salt + ip).encode()).hexdigest()[:24]
 
 
 def auth_guard_status():
@@ -202,7 +216,6 @@ def auth_guard_status():
 
 
 def record_auth_failure():
-    """Five failed login/registration submissions from one IP trigger a five-minute lock."""
     now = int(time.time())
     ip_hash = client_ip_hash()
     with db() as con:
@@ -239,17 +252,15 @@ def render_auth_page(mode="login"):
 
 @app.get("/captcha.svg")
 def captcha_image():
-    """Session-bound image captcha; no SMS or external captcha service required."""
     if request.args.get("refresh") == "1" or not session.get("q7_captcha") or int(time.time()) - int(session.get("q7_captcha_at", 0)) > 600:
         new_captcha()
     chars = session["q7_captcha"]
-    lines = []
-    for i in range(4):
+    lines, text_nodes = [], []
+    for _ in range(4):
         x1, y1 = secrets.randbelow(210), secrets.randbelow(54)
         x2, y2 = secrets.randbelow(210), secrets.randbelow(54)
         hue = secrets.choice([178, 205, 250, 280])
         lines.append(f'<path d="M{x1} {y1} L{x2} {y2}" stroke="hsl({hue},75%,70%)" stroke-opacity=".38" stroke-width="1.2"/>')
-    text_nodes = []
     for i, ch in enumerate(chars):
         y = 35 + secrets.randbelow(9) - 4
         rotate = secrets.randbelow(25) - 12
@@ -282,44 +293,42 @@ def auth():
         session.pop("q7_captcha", None)
         session.pop("q7_captcha_at", None)
         if not captcha_fresh or not captcha_expected or not hmac.compare_digest(captcha_input, captcha_expected):
-            # A mistyped captcha must not burn one of the five password attempts: users who
-            # fumble the image three times were getting locked out of their own account.
-            # Brute force is still bounded by the 20/minute limiter on this route.
             new_captcha()
             flash("图片验证码不正确或已过期，请重新识别。", "error")
             return render_auth_page(mode)
 
         if mode == "register":
-            if (not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username) or re.fullmatch(r"Q7-[0-9]{1,12}", username, re.I)):
-                record_auth_failure()
-                flash("用户名需为 3–32 位字母、数字、点、下划线或短横线，且不能占用 Q7-数字专属 ID 格式。", "error")
+            if not re.fullmatch(r"[A-Za-z0-9\u4e00-\u9fff]{3,8}", username):
+                flash("用户名格式错误：请输入 3–8 位文字、字母或数字。", "error")
                 new_captcha()
                 return render_auth_page(mode)
             phone = request.form.get("phone", "").strip()
-            question = request.form.get("question", "").strip()
-            answer = request.form.get("answer", "").strip()
-            if len(password) < 10:
-                flash("密码至少 10 位，建议使用独立且随机的密码。", "error")
+            confirm_password = request.form.get("confirm_password", "")
+            if not 8 <= len(password) <= 12:
+                flash("密码格式错误：密码必须为 8–12 位。", "error")
+            elif password != confirm_password:
+                flash("确认密码错误：两次输入的密码不一致。", "error")
             elif not re.fullmatch(r"[+0-9 ()-]{7,24}", phone):
-                flash("请输入有效格式的手机号。当前版本不会发送短信。", "error")
-            elif not question or len(answer) < 2:
-                flash("请选择安全问题并填写答案。", "error")
+                flash("手机号格式错误：请输入有效手机号。", "error")
             else:
                 try:
+                    # Legacy columns remain populated for existing SQLite schemas,
+                    # but new registrations no longer use security questions.
+                    legacy_answer = secrets.token_urlsafe(32)
                     with db() as con:
-                        cur = con.execute("INSERT INTO users(username,password_hash,phone,security_question,security_answer_hash,created_at) VALUES(?,?,?,?,?,?)",
-                                          (username, generate_password_hash(password), phone, question[:160], generate_password_hash(answer.casefold()), int(time.time())))
+                        cur = con.execute(
+                            "INSERT INTO users(username,password_hash,phone,security_question,security_answer_hash,created_at) VALUES(?,?,?,?,?,?)",
+                            (username, generate_password_hash(password), phone, "已停用", generate_password_hash(legacy_answer), int(time.time())))
                         new_user_id = cur.lastrowid
                     clear_auth_failures()
                     log_event("account", "新账户注册", user_id=new_user_id)
-                    account_id = f"Q7-{new_user_id:07d}"
-                    flash(f"注册成功！你的专属 ID 是 {account_id}，请保存好。", "success")
+                    flash(f"注册成功！你的专属 ID 是 Q7-{new_user_id:07d}，请保存好。", "success")
                     return render_auth_page("login")
                 except sqlite3.IntegrityError:
-                    record_auth_failure()
-                    flash("注册未完成：该用户名可能已被使用。", "error")
+                    flash("用户名已被使用，请换一个用户名。", "error")
+            new_captcha()
         else:
-            if not re.fullmatch(r"(?:[A-Za-z0-9_.-]{3,32}|Q7-[0-9]{1,12})", username, re.I):
+            if not re.fullmatch(r"(?:[A-Za-z0-9\u4e00-\u9fff_.-]{3,32}|Q7-[0-9]{1,12})", username, re.I):
                 record_auth_failure()
                 flash("请输入注册用户名或 Q7-数字专属 ID。", "error")
                 new_captcha()
@@ -345,47 +354,107 @@ def auth():
             else:
                 left = max(0, 5 - auth_guard_status()["fail_count"])
                 flash(f"账号 ID / 用户名或密码错误。再失败 {left} 次将锁定 5 分钟。", "error")
-        new_captcha()
+            new_captcha()
     return render_auth_page(mode)
 
+
 @app.route("/recover", methods=["GET", "POST"])
-@limiter.limit("5 per minute", methods=["POST"])
+@limiter.limit("3 per minute", methods=["POST"])
 def recover():
-    question = None
-    if request.method == "POST":
-        step = request.form.get("step", "lookup")
-        username = request.form.get("username", "").strip()
+    """Four-character visual CAPTCHA + 5-minute, server-side, one-time recovery credential.
+
+    IMPORTANT: ID/username + phone + CAPTCHA does not prove ownership of that phone.
+    Use this only when the site's threat model accepts that limitation.
+    """
+    now = int(time.time())
+    if request.method == "GET":
+        if not session.get("q7_captcha") or now - int(session.get("q7_captcha_at", 0)) > 600:
+            new_captcha()
+        return render_template("recover.html")
+
+    step = request.form.get("step", "lookup")
+    if step == "lookup":
+        typed = request.form.get("captcha", "").strip().upper()
+        expected = str(session.get("q7_captcha", "")).upper()
+        fresh = bool(expected) and now - int(session.get("q7_captcha_at", 0)) <= 600
+        session.pop("q7_captcha", None)
+        session.pop("q7_captcha_at", None)
+        if not fresh or not hmac.compare_digest(typed, expected):
+            new_captcha()
+            flash("图片验证码错误或已过期，请重新输入。", "error")
+            return render_template("recover.html")
+
+        identity = request.form.get("username", "").strip()
         phone = request.form.get("phone", "").strip()
-        if step == "lookup":
-            with db() as con:
-                user = con.execute("SELECT username,phone,security_question FROM users WHERE username=? AND phone=?", (username, phone)).fetchone()
-            if user:
-                question = user["security_question"]
-                session["recover_user"] = username
-                flash("请回答注册时设置的安全问题。", "success")
+        user = None
+        with db() as con:
+            if re.fullmatch(r"Q7-[0-9]{1,12}", identity, re.I):
+                user_id = int(identity.split("-", 1)[1])
+                user = con.execute("SELECT id,username,phone FROM users WHERE id=? AND phone=?", (user_id, phone)).fetchone()
             else:
-                flash("信息不匹配或账户不存在。", "error")
-        elif step == "reset":
-            answer = request.form.get("answer", "").strip().casefold()
-            new_password = request.form.get("new_password", "")
-            uname = session.get("recover_user")
-            reset_user_id = None
-            with db() as con:
-                user = con.execute("SELECT * FROM users WHERE username=?", (uname,)).fetchone() if uname else None
-                if user and check_password_hash(user["security_answer_hash"], answer) and len(new_password) >= 10:
-                    con.execute("UPDATE users SET password_hash=? WHERE id=?", (generate_password_hash(new_password), user["id"]))
-                    reset_user_id = user["id"]
+                user = con.execute("SELECT id,username,phone FROM users WHERE username=? AND phone=?", (identity, phone)).fetchone()
+        if not user:
+            new_captcha()
+            flash("专属 ID / 用户名或注册手机号不匹配。", "error")
+            return render_template("recover.html")
+
+        raw_token = secrets.token_urlsafe(24)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        session_key = session.get("q7_recovery_session") or secrets.token_urlsafe(24)
+        session["q7_recovery_session"] = session_key
+        session_hash = hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+        expires_at = now + 300
+        with db() as con:
+            # A newly issued credential invalidates any older outstanding one for this user.
+            con.execute("UPDATE account_recovery_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL", (now, int(user["id"])))
+            con.execute("INSERT INTO account_recovery_tokens(token_hash,user_id,session_hash,created_at,expires_at,used_at) VALUES(?,?,?,?,?,NULL)",
+                        (token_hash, int(user["id"]), session_hash, now, expires_at))
+        masked_phone = user["phone"] if len(user["phone"]) < 7 else user["phone"][:3] + "****" + user["phone"][-4:]
+        log_event("account", "生成五分钟密码恢复凭证", user_id=int(user["id"]))
+        flash("恢复凭证已生成，请在 5 分钟内完成密码修改。", "success")
+        return render_template("recover.html", recovery_token=raw_token,
+                               account_id=f"Q7-{int(user['id']):07d}", username=user["username"],
+                               phone=masked_phone, expires_in=300)
+
+    if step == "reset":
+        submitted_token = request.form.get("recovery_token", "").strip()
+        new_password = request.form.get("new_password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        if not 8 <= len(new_password) <= 12:
+            flash("新密码必须为 8–12 位。", "error")
+            return render_template("recover.html", recovery_token=submitted_token, expires_in=180)
+        if new_password != confirm_password:
+            flash("两次输入的新密码不一致。", "error")
+            return render_template("recover.html", recovery_token=submitted_token, expires_in=180)
+
+        session_key = session.get("q7_recovery_session", "")
+        session_hash = hashlib.sha256(session_key.encode("utf-8")).hexdigest() if session_key else ""
+        token_hash = hashlib.sha256(submitted_token.encode("utf-8")).hexdigest()
+        new_hash = generate_password_hash(new_password)
+        reset_user_id = None
+        with db() as con:
+            cur = con.execute("""UPDATE account_recovery_tokens SET used_at=?
+                WHERE token_hash=? AND session_hash=? AND expires_at>? AND used_at IS NULL""",
+                (now, token_hash, session_hash, now))
+            if cur.rowcount == 1:
+                row = con.execute("SELECT user_id FROM account_recovery_tokens WHERE token_hash=?", (token_hash,)).fetchone()
+                if row:
+                    reset_user_id = int(row["user_id"])
+                    con.execute("UPDATE users SET password_hash=? WHERE id=?", (new_hash, reset_user_id))
                 else:
-                    question = user["security_question"] if user else None
-            if reset_user_id:
-                # Written after the transaction closes: logging inside the block opened a second
-                # connection and deadlocked on the first one's write lock.
-                session.pop("recover_user", None)
-                log_event("account", "通过安全问题重置密码", user_id=reset_user_id)
-                flash("密码已重置，请重新登录。", "success")
-                return redirect(url_for("auth"))
-            flash("验证失败，或新密码不足 10 位。", "error")
-    return render_template("recover.html", question=question)
+                    reset_user_id = None
+        if not reset_user_id:
+            session.pop("q7_recovery_session", None)
+            flash("恢复凭证已过期、已使用或不属于当前会话，请重新申请。", "error")
+            return render_template("recover.html")
+        session.pop("q7_recovery_session", None)
+        log_event("account", "使用一次性恢复凭证重置密码", user_id=reset_user_id)
+        flash("密码已重置，请使用新密码登录。", "success")
+        return redirect(url_for("auth"))
+
+    flash("恢复步骤无效，请重新开始。", "error")
+    return render_template("recover.html")
+
 
 @app.route("/logout", methods=["POST"])
 @logged_in
@@ -393,12 +462,14 @@ def logout():
     session.clear()
     return redirect(url_for("auth"))
 
+
 @app.route("/dashboard")
 @logged_in
 def dashboard():
     with db() as con:
         nodes = con.execute("SELECT id,uri,name FROM nodes WHERE user_id=? ORDER BY id DESC", (session["user_id"],)).fetchall()
     return render_template("dashboard.html", nodes=nodes, username=session.get("username"), account_id=f"Q7-{int(session['user_id']):07d}")
+
 
 @app.post("/api/nodes/import")
 @logged_in
@@ -409,7 +480,8 @@ def import_nodes():
     with db() as con:
         for line in text.splitlines()[:3000]:
             line = line.strip()
-            if not line or line.startswith("#"): continue
+            if not line or line.startswith("#"):
+                continue
             item = parse_node(line)
             if not item:
                 invalid += 1
@@ -421,6 +493,7 @@ def import_nodes():
                 duplicate += 1
     return jsonify(added=added, duplicate=duplicate, invalid=invalid)
 
+
 @app.post("/api/nodes/<int:node_id>/delete")
 @logged_in
 @limiter.limit("60 per minute")
@@ -429,26 +502,28 @@ def delete_node(node_id):
         con.execute("DELETE FROM nodes WHERE id=? AND user_id=?", (node_id, session["user_id"]))
     return jsonify(ok=True)
 
+
 @app.get("/api/nodes/export")
 @logged_in
 @limiter.limit("60 per minute")
 def export_nodes():
-    from flask import Response
     with db() as con:
         rows = con.execute("SELECT uri FROM nodes WHERE user_id=? ORDER BY id", (session["user_id"],)).fetchall()
     return Response("\n".join(r["uri"] for r in rows) + ("\n" if rows else ""),
                     mimetype="text/plain; charset=utf-8",
                     headers={"Content-Disposition": "attachment; filename=q7vpn-nodes.txt"})
 
+
 @app.route("/security", methods=["GET"])
 @logged_in
 def security():
     with db() as con:
-        user = con.execute("SELECT id,username,phone,created_at,security_question FROM users WHERE id=?", (session["user_id"],)).fetchone()
+        user = con.execute("SELECT id,username,phone,created_at FROM users WHERE id=?", (session["user_id"],)).fetchone()
         events = con.execute("SELECT created_at,category,detail,ip_hash FROM security_events WHERE user_id=? ORDER BY id DESC LIMIT 30", (session["user_id"],)).fetchall()
         node_count = con.execute("SELECT COUNT(*) AS c FROM nodes WHERE user_id=?", (session["user_id"],)).fetchone()["c"]
     return render_template("security.html", events=events, node_count=node_count, user=user,
                            account_id=f"Q7-{int(session['user_id']):07d}")
+
 
 @app.post("/security/password")
 @logged_in
@@ -462,26 +537,25 @@ def change_password():
         user = con.execute("SELECT password_hash FROM users WHERE id=?", (session["user_id"],)).fetchone()
         if not user or not check_password_hash(user["password_hash"], current_password):
             flash("当前密码不正确，密码没有修改。", "error")
-        elif len(new_password) < 10:
-            flash("新密码至少需要 10 位。", "error")
+        elif not 8 <= len(new_password) <= 12:
+            flash("新密码必须为 8–12 位。", "error")
         elif new_password != confirm_password:
             flash("两次输入的新密码不一致。", "error")
         elif check_password_hash(user["password_hash"], new_password):
             flash("新密码不能与当前密码相同。", "error")
         else:
-            con.execute("UPDATE users SET password_hash=? WHERE id=?",
-                        (generate_password_hash(new_password), session["user_id"]))
+            con.execute("UPDATE users SET password_hash=? WHERE id=?", (generate_password_hash(new_password), session["user_id"]))
             changed = True
     if changed:
         log_event("account", "账户密码已修改", user_id=session["user_id"])
         flash("密码修改成功。请妥善保管新密码。", "success")
     return redirect(url_for("security") + "#password")
 
+
 @app.get("/health")
 @limiter.exempt
 def health():
-    """Exempt from the 300/hour default: platform health checks alone would trip it and take the site down."""
-    return jsonify(status="ok", app="Q7VPN", version="5.2.1")
+    return jsonify(status="ok", app="Q7VPN", version="6.0.0")
 
 
 @app.after_request
@@ -506,8 +580,6 @@ def too_large(_):
 
 @app.errorhandler(429)
 def rate_limited(_):
-    # Must stay a 429: returning a bare string body from a handler silently downgrades to 200
-    # and turns "you are being rate limited" into what looks like a successful request.
     page = os.path.join(APP_DIR, "templates", "rate_limited.html")
     if os.path.exists(page):
         return render_template("rate_limited.html"), 429
@@ -515,12 +587,10 @@ def rate_limited(_):
 
 
 if os.environ.get("Q7VPN_RATELIMIT_OFF") == "1":
-    # Local load-testing only. Never set this on a public deployment.
     limiter.enabled = False
 
 init_db()
 if __name__ == "__main__":
     if app.config["SESSION_COOKIE_SECURE"] and os.environ.get("COOKIE_SECURE") is None:
-        app.logger.warning("SESSION_COOKIE_SECURE=1：若用 http:// 直接访问，浏览器不会回传会话 Cookie，"
-                           "登录会静默失败。本地自测请设 COOKIE_SECURE=0。")
+        app.logger.warning("SESSION_COOKIE_SECURE=1：若用 http:// 直接访问，浏览器不会回传会话 Cookie，登录会静默失败。")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
