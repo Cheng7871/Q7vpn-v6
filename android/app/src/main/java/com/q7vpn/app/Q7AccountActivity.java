@@ -241,8 +241,12 @@ public final class Q7AccountActivity extends Activity {
         }
 
         if (!noticeText.isEmpty()) {
-            TextView noticeViem = text(translateMessage(noticeText),10,noticeText.contains("成功")?Color.rgb(139,235,202):Color.rgb(255,183,193),false);
-            notice.setPadding(dp(2),dp(12),dp(2),0); card.addView(noticeViem);
+            TextView noticeView = text(translateMessage(noticeText), 10,
+                    noticeText.contains("成功")
+                            ? Color.rgb(139, 235, 202)
+                            : Color.rgb(255, 183, 193), false);
+            noticeView.setPadding(dp(2), dp(12), dp(2), 0);
+            card.addView(noticeView);
         }
         page.addView(card); space(page,18);
         TextView footer = text("Q7VPN · PRIVATE NETWORK · SECURE BY DESIGN",8,Color.rgb(111,137,164),true);
