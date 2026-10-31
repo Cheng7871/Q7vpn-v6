@@ -23,13 +23,6 @@ import android.view.WindowManager;
 import android.view.animation.LinearInterpolator;
 import android.view.Gravity;
 import android.view.View;
-import android.webkit.CookieManager;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceError;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebSettings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -65,8 +58,6 @@ public class MainActivity extends Activity {
     private static final int PAGE_SIZE = 80;
     private static final String PREFS = "q7vpn";
     private static final String KEY_THEME = "q7_theme";
-    private static final String ACCOUNT_BASE_URL = "https://q7vpn.onrender.com";
-    private static final String ACCOUNT_HOST = "q7vpn.onrender.com";
 
     private final ArrayList<Node> nodes = new ArrayList<>();
     private final ExecutorService probeExecutor = Executors.newFixedThreadPool(8);
@@ -94,11 +85,6 @@ public class MainActivity extends Activity {
     private boolean lightTheme;
     private String currentStatusKey = "status_ready";
     private int[] currentStatusArgs;
-    private WebView accountWebView;
-    private boolean accountPortalVisible;
-    private boolean accountPortalFailed;
-    private boolean nativeHomeVisible;
-    private boolean portalOpenedFromNative;
 
     private static final class Node {
         final String uri;
@@ -163,149 +149,16 @@ public class MainActivity extends Activity {
 
     private String s(String key) { return Q7Strings.t(this, key); }
 
+    private static final int ACCOUNT_GATE = 76;
+    private static final int ACCOUNT_CENTER = 80;
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         lightTheme = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_THEME, false);
         loadNodes();
-        // Keep the original Render login/register system: the embedded portal uses the
-        // same server session, CSRF protection, CAPTCHA, IP lockout and recovery routes.
-        openAccountPortal(ACCOUNT_BASE_URL + "/");
-    }
-
-    private void createAccountWebView() {
-        if (accountWebView != null) return;
-        CookieManager cookies = CookieManager.getInstance();
-        cookies.setAcceptCookie(true);
-        accountWebView = new WebView(this);
-        accountWebView.setBackgroundColor(Color.rgb(6, 10, 20));
-        accountWebView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        WebSettings settings = accountWebView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setSupportZoom(false);
-        settings.setBuiltInZoomControls(false);
-        settings.setDisplayZoomControls(false);
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(false);
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
-        settings.setJavaScriptCanOpenWindowsAutomatically(false);
-        if (Build.VERSION.SDK_INT >= 26) settings.setSafeBrowsingEnabled(true);
-        accountWebView.setWebChromeClient(new WebChromeClient());
-        accountWebView.setWebViewClient(new WebViewClient() {
-            @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return handlePortalNavigation(request.getUrl().toString());
-            }
-            @Override public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return handlePortalNavigation(url);
-            }
-            @Override public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                CookieManager.getInstance().flush();
-                handlePortalPage(url);
-            }
-            @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-                if (request != null && request.isForMainFrame()) showAccountPortalError();
-            }
-        });
-    }
-
-    /** Return false for the same trusted HTTPS site so WebView can complete forms and redirects. */
-    private boolean handlePortalNavigation(String rawUrl) {
-        try {
-            Uri uri = Uri.parse(rawUrl);
-            if ("https".equalsIgnoreCase(uri.getScheme())
-                    && ACCOUNT_HOST.equalsIgnoreCase(uri.getHost())) return false;
-        } catch (Exception ignored) { }
-        // Do not let account pages silently navigate to arbitrary websites inside the VPN app.
-        return true;
-    }
-
-    private void handlePortalPage(String rawUrl) {
-        if (isFinishing() || accountWebView == null) return;
-        Uri uri;
-        try { uri = Uri.parse(rawUrl); } catch (Exception ignored) { return; }
-        if (!ACCOUNT_HOST.equalsIgnoreCase(uri.getHost())) return;
-        String path = uri.getPath() == null ? "/" : uri.getPath();
-        accountPortalFailed = false;
-        if ("/dashboard".equals(path)) {
-            // The server only renders this protected route after a real authenticated session.
-            CookieManager.getInstance().flush();
-            showNativeHome();
-        } else {
-            // /auth (login/register), /recover, /security and rate-limit screens stay in WebView.
-            if ("/auth".equals(path)) portalOpenedFromNative = false;
-            accountPortalVisible = true;
-            nativeHomeVisible = false;
-            accountWebView.onResume();
-            if (accountWebView.getParent() == null) setContentView(accountWebView);
-        }
-    }
-
-    private void openAccountPortal(String url) {
-        createAccountWebView();
-        accountPortalVisible = true;
-        nativeHomeVisible = false;
-        accountPortalFailed = false;
-        accountWebView.onResume();
-        if (accountWebView.getParent() == null) setContentView(accountWebView);
-        accountWebView.loadUrl(url);
-    }
-
-    private void openAccountCenter() {
-        portalOpenedFromNative = nativeHomeVisible;
-        openAccountPortal(ACCOUNT_BASE_URL + "/security");
-    }
-
-    private void showNativeHome() {
-        accountPortalVisible = false;
-        nativeHomeVisible = true;
-        portalOpenedFromNative = false;
-        if (accountWebView != null) accountWebView.onPause();
-        buildUi();
-        if (nodes.isEmpty() && "status_ready".equals(currentStatusKey)) showStatus("status_ready");
-    }
-
-    private void showAccountPortalError() {
-        if (accountPortalFailed || isFinishing()) return;
-        accountPortalFailed = true;
-        accountPortalVisible = true;
-        nativeHomeVisible = false;
-        LinearLayout panel = vertical();
-        panel.setGravity(Gravity.CENTER);
-        panel.setPadding(dp(26), dp(28), dp(26), dp(28));
-        panel.setBackgroundColor(Color.rgb(7, 12, 23));
-        TextView logo = label("Q7VPN", 38, Color.rgb(180, 239, 247), true);
-        logo.setShadowLayer(dp(18), 0, 0, Color.rgb(66, 203, 227));
-        panel.addView(logo);
-        TextView title = label(s("portal_error_title"), 19, Color.WHITE, true);
-        title.setPadding(0, dp(24), 0, dp(8));
-        panel.addView(title);
-        TextView detail = label(s("portal_error_detail"), 13, Color.rgb(167, 183, 204), false);
-        detail.setGravity(Gravity.CENTER);
-        panel.addView(detail);
-        Button retry = actionButton(s("portal_retry"), true);
-        LinearLayout.LayoutParams retryParams = new LinearLayout.LayoutParams(-1, dp(50));
-        retryParams.setMargins(0, dp(22), 0, 0);
-        retry.setOnClickListener(v -> openAccountPortal(ACCOUNT_BASE_URL + "/"));
-        panel.addView(retry, retryParams);
-        setContentView(panel);
-    }
-
-    @Override public void onBackPressed() {
-        if (accountPortalVisible && accountWebView != null && accountWebView.canGoBack()) {
-            accountWebView.goBack();
-            return;
-        }
-        if (accountPortalVisible && portalOpenedFromNative) {
-            showNativeHome();
-            return;
-        }
-        super.onBackPressed();
+        Intent account = new Intent(this, Q7AccountActivity.class);
+        account.putExtra(Q7AccountActivity.EXTRA_TARGET, Q7AccountActivity.TARGET_HOME);
+        startActivityForResult(account, ACCOUNT_GATE);
     }
 
     @Override protected void onStart() {
@@ -470,7 +323,11 @@ public class MainActivity extends Activity {
         Button account = actionButton(s("account_center"), false);
         account.setTextSize(10);
         account.setMinHeight(dp(38));
-        account.setOnClickListener(v -> openAccountCenter());
+        account.setOnClickListener(v -> {
+            Intent intent = new Intent(this, Q7AccountActivity.class);
+            intent.putExtra(Q7AccountActivity.EXTRA_TARGET, Q7AccountActivity.TARGET_SECURITY);
+            startActivityForResult(intent, ACCOUNT_CENTER);
+        });
         LinearLayout.LayoutParams accountParams = new LinearLayout.LayoutParams(-2, dp(40));
         accountParams.setMargins(0, 0, dp(5), 0);
         top.addView(account, accountParams);
@@ -778,6 +635,15 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == ACCOUNT_GATE || requestCode == ACCOUNT_CENTER) {
+            if (resultCode == RESULT_OK) {
+                buildUi();
+                updateConnectionButtons();
+            } else {
+                finish();
+            }
+            return;
+        }
         if (requestCode == NODE_CHECK_PERMISSION) {
             if (resultCode == RESULT_OK) beginBatchNodeValidation();
             else showStatus("status_permission");
@@ -1113,12 +979,6 @@ public class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         persistNodes();
         probeExecutor.shutdownNow();
-        if (accountWebView != null) {
-            accountWebView.stopLoading();
-            accountWebView.setWebViewClient(new WebViewClient());
-            accountWebView.destroy();
-            accountWebView = null;
-        }
         super.onDestroy();
     }
 }
